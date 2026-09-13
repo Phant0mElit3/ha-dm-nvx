@@ -97,7 +97,11 @@ class CrestronNVXStreamSelect(CoordinatorEntity, SelectEntity):
             if stream.get("Processing") or not isinstance(location, str):
                 return None
             if not location:
-                return OFF_OPTION
+                return (
+                    OFF_OPTION
+                    if str(stream.get("Status", "")).casefold() == "stream stopped"
+                    else None
+                )
             if str(stream.get("Status", "")).casefold() != "stream started":
                 return None
             matches = {

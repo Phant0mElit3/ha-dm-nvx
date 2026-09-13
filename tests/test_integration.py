@@ -167,6 +167,14 @@ def test_unknown_receive_location_does_not_claim_requested_source(device, coordi
     assert CrestronNVXStreamSelect(coordinator, device).current_option is None
 
 
+def test_empty_receive_url_requires_stopped_status_for_off(device, coordinator):
+    coordinator.data = {"primary_stream": {"StreamLocation": "", "Status": "Stream started"}}
+    entity = CrestronNVXStreamSelect(coordinator, device)
+    assert entity.current_option is None
+    coordinator.data["primary_stream"]["Status"] = "Stream stopped"
+    assert entity.current_option == "Off"
+
+
 def test_host_change_preserves_entity_and_device_identity(device, coordinator):
     before = CrestronNVXStreamSelect(coordinator, device).unique_id
     info = crestron_device_info(device)
