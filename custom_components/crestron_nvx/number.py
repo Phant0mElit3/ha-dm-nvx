@@ -4,6 +4,7 @@ Purely a Home Assistant-side setting (the Crestron API has no such concept)
 controlling how long notify.py's OSD notify entity leaves text on screen
 before auto-clearing it. Persisted across restarts via RestoreNumber.
 """
+
 from __future__ import annotations
 
 from homeassistant.components.number import NumberMode, RestoreNumber
@@ -50,7 +51,7 @@ class CrestronNVXOsdDurationNumber(RestoreNumber):
         """Initialize the number entity."""
         self.device = device
         self._attr_name = f"{device.name} OSD Display Duration"
-        self._attr_unique_id = f"{device.host}_osd_display_duration"
+        self._attr_unique_id = f"{device.entity_id_prefix}_osd_display_duration"
         self._attr_device_info = crestron_device_info(device)
 
     async def async_added_to_hass(self) -> None:
@@ -58,7 +59,9 @@ class CrestronNVXOsdDurationNumber(RestoreNumber):
         await super().async_added_to_hass()
         last_data = await self.async_get_last_number_data()
         if last_data is not None and last_data.native_value is not None:
-            self.device.osd_display_seconds = last_data.native_value
+            self.device.osd_display_seconds = max(
+                MIN_SECONDS, min(MAX_SECONDS, last_data.native_value)
+            )
 
     @property
     def native_value(self) -> float:

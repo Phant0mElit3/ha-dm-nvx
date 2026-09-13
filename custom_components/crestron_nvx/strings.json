@@ -12,15 +12,46 @@
           "verify_ssl": "Verify SSL Certificate",
           "scan_interval": "Update Interval (seconds)"
         }
+      },
+      "reconfigure": {
+        "title": "Reconfigure Crestron DM NVX",
+        "description": "Update the connection to the same physical NVX device. Enter its password to verify the changes.",
+        "data": {
+          "name": "Device Name",
+          "host": "IP Address or Hostname",
+          "username": "Username",
+          "password": "Password",
+          "verify_ssl": "Verify SSL Certificate",
+          "scan_interval": "Update Interval (seconds)"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reconnect Crestron DM NVX",
+        "description": "The device rejected the saved credentials. Enter working credentials to reconnect.",
+        "data": {
+          "name": "Device Name",
+          "host": "IP Address or Hostname",
+          "username": "Username",
+          "password": "Password",
+          "verify_ssl": "Verify SSL Certificate",
+          "scan_interval": "Update Interval (seconds)"
+        }
       }
     },
     "error": {
       "cannot_connect": "Failed to connect to the device. Please check the IP address and network connection.",
       "invalid_auth": "Invalid username or password. Please check your credentials.",
-      "unknown": "An unexpected error occurred. Please try again."
+      "unknown": "An unexpected error occurred. Please try again.",
+      "invalid_host": "Enter only an IP address or hostname, without https:// or a port.",
+      "invalid_name": "Device name and username cannot be blank."
     },
     "abort": {
-      "already_configured": "This device is already configured."
+      "already_configured": "This device is already configured.",
+      "reauth_successful": "Authentication updated successfully.",
+      "reconfigure_successful": "Device configuration updated successfully.",
+      "wrong_device": "This is a different NVX device. Add it as a separate integration.",
+      "identity_unavailable": "The original device identity is unknown. Reconnect using its original address first, or add the device as a separate entry.",
+      "unsupported_config": "This entry cannot be reconfigured here. Configure one device per entry."
     }
   },
   "options": {
@@ -28,7 +59,8 @@
       "init": {
         "title": "Crestron DM NVX Options",
         "data": {
-          "enable_preview_camera": "Enable preview camera (fetches a live JPEG snapshot from each device)"
+          "enable_preview_camera": "Enable preview camera (fetches a live JPEG snapshot from each device)",
+          "scan_interval": "Update interval (seconds)"
         }
       }
     }

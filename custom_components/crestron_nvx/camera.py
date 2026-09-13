@@ -6,12 +6,14 @@ polls the device's own JPEG preview generator (Device/Preview), a separate,
 heavier feature from the small JSON status endpoints everything else here
 uses, so it isn't created unconditionally for everyone.
 """
+
 from __future__ import annotations
 
 from homeassistant.components.camera import Camera
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_ENABLE_PREVIEW_CAMERA, DOMAIN
 from .entity import crestron_device_info
@@ -30,14 +32,14 @@ async def async_setup_entry(
     api = data["api"]
 
     entities = [
-        CrestronNVXPreviewCamera(api.get_device(device_name))
+        CrestronNVXPreviewCamera(data["coordinators"][device_name], api.get_device(device_name))
         for device_name in data["coordinators"]
         if api.get_device(device_name).preview_supported
     ]
     async_add_entities(entities)
 
 
-class CrestronNVXPreviewCamera(Camera):
+class CrestronNVXPreviewCamera(CoordinatorEntity, Camera):
     """Snapshot of what this device's input/output currently shows.
 
     Not tied to the polling coordinator - the image is fetched fresh
@@ -45,12 +47,13 @@ class CrestronNVXPreviewCamera(Camera):
     automation snapshot, etc.), same as any other still-image camera.
     """
 
-    def __init__(self, device) -> None:
+    def __init__(self, coordinator, device) -> None:
         """Initialize the camera."""
-        super().__init__()
+        Camera.__init__(self)
+        CoordinatorEntity.__init__(self, coordinator)
         self.device = device
         self._attr_name = f"{device.name} Preview"
-        self._attr_unique_id = f"{device.host}_preview"
+        self._attr_unique_id = f"{device.entity_id_prefix}_preview"
         self._attr_device_info = crestron_device_info(device)
 
     async def async_camera_image(

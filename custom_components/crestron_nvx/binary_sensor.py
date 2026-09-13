@@ -1,4 +1,5 @@
 """Binary sensor platform for Crestron NVX."""
+
 from __future__ import annotations
 
 from homeassistant.components.binary_sensor import (
@@ -55,7 +56,7 @@ class CrestronNVXVideoConnectedBinarySensor(CrestronNVXBinarySensorBase):
         super().__init__(coordinator, device)
         label = "Sink Connected" if device.is_receiver else "Signal Detected"
         self._attr_name = f"{device.name} {label}"
-        self._attr_unique_id = f"{device.host}_video_connected_binary"
+        self._attr_unique_id = f"{device.entity_id_prefix}_video_connected_binary"
         self._attr_icon = "mdi:video-input-hdmi"
 
     @property
@@ -76,7 +77,7 @@ class CrestronNVXNetworkConnectedBinarySensor(CrestronNVXBinarySensorBase):
         """Initialize the binary sensor."""
         super().__init__(coordinator, device)
         self._attr_name = f"{device.name} Network Connected"
-        self._attr_unique_id = f"{device.host}_network_connected_binary"
+        self._attr_unique_id = f"{device.entity_id_prefix}_network_connected_binary"
 
     @property
     def is_on(self) -> bool | None:

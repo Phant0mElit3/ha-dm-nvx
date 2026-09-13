@@ -1,14 +1,17 @@
 """Client for the real Crestron DM NVX REST API (CresNext).
 
 Reference: https://sdkcon78221.crestron.com/sdk/DM_NVX_REST_API/
-All endpoints and behavior below were verified against live DM-NVX-E30,
-DM-NVX-352, DM-NVX-350 and DM-NVX-D30 hardware, not just the docs.
+Existing hardware observations cover DM-NVX-E30, DM-NVX-352, DM-NVX-350
+and DM-NVX-D30. Maintenance fixes are regression-tested with mocked I/O;
+capabilities such as Identify are probed rather than assumed.
 """
+
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
-from typing import Any, Optional
+from typing import Optional
 
 import aiohttp
 
@@ -49,7 +52,7 @@ _CEC_USER_CONTROL_EVENTS = {
 # why the integration previously wouldn't recover after a disconnect.
 # Redirects must be disabled per-request (see _request) and treated the same
 # as 403 here.
-_REAUTH_STATUSES = frozenset({301, 302, 303, 307, 308, 403})
+_REAUTH_STATUSES = frozenset({301, 302, 303, 307, 308, 401, 403})
 
 
 class CrestronNVXError(Exception):
@@ -99,6 +102,7 @@ class CrestronNVXDevice:
         name: Optional[str] = None,
     ) -> None:
         self.host = host
+        self.entity_id_prefix = host
         self.name = name or host
         self.username = username
         self.password = password
@@ -120,6 +124,8 @@ class CrestronNVXDevice:
         self._ssl = None if verify_ssl else False
         self._base_url = f"https://{host}"
         self._authenticated = False
+        self._auth_lock = asyncio.Lock()
+        self._auth_generation = 0
 
     @property
     def is_receiver(self) -> bool:
@@ -130,6 +136,33 @@ class CrestronNVXDevice:
         return self.device_mode == DEVICE_MODE_TRANSMITTER
 
     async def login(self) -> None:
+        """Authenticate, then discover capabilities once during setup."""
+        await self._authenticate()
+        await self._load_port_config()
+        self.osd_supported = (await self.get_osd()) is not None
+        await self._load_test_patterns()
+        await self._load_preview_supported()
+        await self._load_identify_supported()
+        await self._load_device_info()
+
+    async def _authenticate(self, generation: int | None = None) -> None:
+        """Serialize renewal so polling and camera requests share one login."""
+        async with self._auth_lock:
+            if generation is not None and generation != self._auth_generation:
+                return
+            self._authenticated = False
+            await self._login_session()
+            # A 200 login page is not proof of authentication. Probe once,
+            # without renewal, to prevent recursive logins with bad credentials.
+            data = await self._request("DeviceSpecific/DeviceMode", _retry=False)
+            mode = ((data or {}).get("Device") or {}).get("DeviceSpecific", {}).get("DeviceMode")
+            if mode not in (DEVICE_MODE_RECEIVER, DEVICE_MODE_TRANSMITTER):
+                raise CrestronNVXConnectionError("Device did not return a valid NVX device mode")
+            self.device_mode = mode
+            self._authenticated = True
+            self._auth_generation += 1
+
+    async def _login_session(self) -> None:
         """Authenticate and establish the cookie session.
 
         DM NVX auth: GET /userlogin.html to seed the TRACKID cookie, then
@@ -138,11 +171,15 @@ class CrestronNVXDevice:
         aiohttp's cookie jar stores/resends automatically from here on.
         """
         try:
-            await self._session.get(
+            async with self._session.get(
                 f"{self._base_url}{LOGIN_PATH}",
                 ssl=self._ssl,
                 timeout=aiohttp.ClientTimeout(total=10),
-            )
+                allow_redirects=False,
+            ) as response:
+                if response.status != 200:
+                    raise CrestronNVXConnectionError(f"Login page returned HTTP {response.status}")
+                await response.read()
             async with self._session.post(
                 f"{self._base_url}{LOGIN_PATH}",
                 data={"login": self.username, "passwd": self.password},
@@ -152,24 +189,19 @@ class CrestronNVXDevice:
                 },
                 ssl=self._ssl,
                 timeout=aiohttp.ClientTimeout(total=10),
+                allow_redirects=False,
             ) as response:
-                if response.status != 200:
+                if response.status in (401, 403):
                     raise CrestronNVXAuthError(
                         f"Login to {self.host} failed with HTTP {response.status}"
                     )
+                if response.status not in (200, 302, 303):
+                    raise CrestronNVXConnectionError(f"Login returned HTTP {response.status}")
+                await response.read()
         except TimeoutError as err:
             raise CrestronNVXConnectionError(f"Timeout connecting to {self.host}") from err
         except aiohttp.ClientError as err:
             raise CrestronNVXConnectionError(f"Error connecting to {self.host}: {err}") from err
-
-        self._authenticated = True
-        self.device_mode = await self.get_device_mode()
-        await self._load_port_config()
-        self.osd_supported = (await self.get_osd()) is not None
-        await self._load_test_patterns()
-        await self._load_preview_supported()
-        await self._load_identify_supported()
-        await self._load_device_info()
 
     async def _load_device_info(self) -> None:
         """Cache Model/SerialNumber/DeviceVersion - static for the device's lifetime."""
@@ -193,6 +225,8 @@ class CrestronNVXDevice:
             port_config = data["Device"]["DeviceCapabilities"]["PortConfig"]
         except (KeyError, TypeError):
             return
+        if not isinstance(port_config, dict):
+            return
         self.hdmi_inputs = port_config.get("NumberOfHdmiInputs", 0)
         self.hdmi_outputs = port_config.get("NumberOfHdmiOutputs", 0)
 
@@ -208,6 +242,9 @@ class CrestronNVXDevice:
             self.test_patterns = data["Device"]["TestPatternConfig"]["TestPatternsSupported"]
         except (KeyError, TypeError):
             self.test_patterns = []
+        if not isinstance(self.test_patterns, list):
+            self.test_patterns = []
+        self.test_patterns = [value for value in self.test_patterns if isinstance(value, str)]
 
     async def _load_preview_supported(self) -> None:
         """Cache whether this device exposes the /preview JPEG snapshot feature."""
@@ -216,7 +253,7 @@ class CrestronNVXDevice:
             preview = data["Device"]["Preview"]
         except (KeyError, TypeError):
             preview = None
-        self.preview_supported = bool(preview)
+        self.preview_supported = isinstance(preview, dict) and bool(preview)
 
     async def _load_identify_supported(self) -> None:
         """Cache whether this device exposes the Identify object."""
@@ -227,11 +264,13 @@ class CrestronNVXDevice:
         if not self._authenticated:
             return
         try:
-            await self._session.get(
+            async with self._session.get(
                 f"{self._base_url}{LOGOUT_PATH}",
                 ssl=self._ssl,
                 timeout=aiohttp.ClientTimeout(total=10),
-            )
+                allow_redirects=False,
+            ) as response:
+                await response.read()
         except (TimeoutError, aiohttp.ClientError):
             pass
         self._authenticated = False
@@ -246,6 +285,7 @@ class CrestronNVXDevice:
     ) -> Optional[dict]:
         """Make an authenticated request to /Device/<path>."""
         url = f"{self._base_url}/Device/{path}"
+        generation = self._auth_generation
         try:
             async with self._session.request(
                 method,
@@ -261,20 +301,25 @@ class CrestronNVXDevice:
                         self.host,
                         response.status,
                     )
-                    await self.login()
+                    response.release()
+                    await self._authenticate(generation)
                     return await self._request(
                         path, method, json_body, timeout=timeout, _retry=False
                     )
-                if response.status != 200:
-                    _LOGGER.error("Request to %s failed with HTTP %s", url, response.status)
+                if response.status in _REAUTH_STATUSES:
+                    raise CrestronNVXAuthError("Device rejected the authenticated session")
+                if response.status == 404 and method == "GET":
                     return None
-                return await response.json(content_type=None)
-        except TimeoutError:
-            _LOGGER.error("Timeout requesting %s", url)
-            return None
-        except aiohttp.ClientError as err:
-            _LOGGER.error("Error requesting %s: %s", url, err)
-            return None
+                if response.status != 200:
+                    raise CrestronNVXConnectionError(f"{path} returned HTTP {response.status}")
+                data = await response.json(content_type=None)
+                if not isinstance(data, dict):
+                    raise CrestronNVXConnectionError(f"{path} did not return a JSON object")
+                return data
+        except (TimeoutError, aiohttp.ClientError, ValueError) as err:
+            raise CrestronNVXConnectionError(
+                f"Request failed for {path}: {type(err).__name__}"
+            ) from err
 
     async def longpoll(self, timeout: int = 30) -> Optional[dict]:
         """Block until a property changes, or return None on timeout/error.
@@ -284,7 +329,7 @@ class CrestronNVXDevice:
         """
         data = await self._request(LONGPOLL_PATH.removeprefix("/Device/"), timeout=timeout)
         if data is None:
-            return None
+            raise CrestronNVXConnectionError("Longpoll endpoint is unavailable")
         if data.get("Device") == "Response Timeout":
             return None
         return data
@@ -298,7 +343,7 @@ class CrestronNVXDevice:
             return None
 
     async def get_device_mode(self) -> Optional[str]:
-        """"Transmitter" or "Receiver", read from the device itself."""
+        """ "Transmitter" or "Receiver", read from the device itself."""
         data = await self._request("DeviceSpecific/DeviceMode")
         try:
             return data["Device"]["DeviceSpecific"]["DeviceMode"]
@@ -360,7 +405,8 @@ class CrestronNVXDevice:
         """Network-wide map of {unique_id: stream_info} available to route to."""
         data = await self._request("DiscoveredStreams")
         try:
-            return data["Device"]["DiscoveredStreams"]["Streams"]
+            streams = data["Device"]["DiscoveredStreams"]["Streams"]
+            return streams if isinstance(streams, dict) else {}
         except (KeyError, TypeError):
             return {}
 
@@ -395,7 +441,9 @@ class CrestronNVXDevice:
                 }
             }
         }
-        return self._post_ok(await self._request("AvRouting/Routes/0", method="POST", json_body=body))
+        return self._post_ok(
+            await self._request("AvRouting/Routes/0", method="POST", json_body=body)
+        )
 
     async def set_route_off(self) -> bool:
         """Clear video, audio and USB together - confirmed live to blank the output cleanly.
@@ -407,12 +455,12 @@ class CrestronNVXDevice:
         """
         body = {
             "Device": {
-                "AvRouting": {
-                    "Routes": [{"VideoSource": "", "AudioSource": "", "UsbSource": ""}]
-                }
+                "AvRouting": {"Routes": [{"VideoSource": "", "AudioSource": "", "UsbSource": ""}]}
             }
         }
-        return self._post_ok(await self._request("AvRouting/Routes/0", method="POST", json_body=body))
+        return self._post_ok(
+            await self._request("AvRouting/Routes/0", method="POST", json_body=body)
+        )
 
     async def get_route_control(self) -> Optional[dict]:
         """AvRouting-wide flags, notably IsSecondaryAudioFollowsVideoEnabled."""
@@ -435,18 +483,22 @@ class CrestronNVXDevice:
                 "AvRouting": {"RouteControl": {"IsSecondaryAudioFollowsVideoEnabled": enabled}}
             }
         }
-        ok = self._post_ok(await self._request("AvRouting/RouteControl", method="POST", json_body=body))
+        ok = self._post_ok(
+            await self._request("AvRouting/RouteControl", method="POST", json_body=body)
+        )
         if ok and enabled:
             route = await self.get_current_route()
             video_uid = (route or {}).get("VideoSource")
-            if video_uid:
+            if video_uid is not None:
                 ok = await self.set_audio_source(video_uid)
         return ok
 
     async def set_audio_source(self, source_uid: str) -> bool:
         """Route audio only to the given DiscoveredStreams UID, independent of video."""
         body = {"Device": {"AvRouting": {"Routes": [{"AudioSource": source_uid}]}}}
-        return self._post_ok(await self._request("AvRouting/Routes/0", method="POST", json_body=body))
+        return self._post_ok(
+            await self._request("AvRouting/Routes/0", method="POST", json_body=body)
+        )
 
     async def get_device_specific(self) -> Optional[dict]:
         """DeviceSpecific object - VideoSource/ActiveVideoSource used for HDMI input switching."""
@@ -556,6 +608,7 @@ class CrestronNVXDevice:
         """
         url = f"{self._base_url}/preview/preview_{size}.jpeg"
         for attempt in (1, 2):
+            generation = self._auth_generation
             try:
                 async with self._session.get(
                     url,
@@ -564,11 +617,15 @@ class CrestronNVXDevice:
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as response:
                     if response.status in _REAUTH_STATUSES and attempt == 1:
-                        await self.login()
+                        response.release()
+                        await self._authenticate(generation)
                         continue
+                    if response.status in _REAUTH_STATUSES:
+                        raise CrestronNVXAuthError("Device rejected the preview session")
                     if response.status != 200:
                         return None
-                    return await response.read()
+                    image = await response.read()
+                    return image if image.startswith(b"\xff\xd8\xff") else None
             except TimeoutError:
                 _LOGGER.error("Timeout fetching preview image for %s", self.host)
                 return None
@@ -581,16 +638,15 @@ class CrestronNVXDevice:
         """Return whether identify mode is active, or None if unsupported."""
         data = await self._request("Identify")
         try:
-            return data["Device"]["Identify"]["IsIdentifyActive"]
+            value = data["Device"]["Identify"]["IsIdentifyActive"]
+            return value if isinstance(value, bool) else None
         except (KeyError, TypeError):
             return None
 
     async def set_identify(self, enabled: bool) -> bool:
         """Turn the device's identify LED flashing mode on or off."""
         body = {"Device": {"Identify": {"IsIdentifyActive": enabled}}}
-        return self._post_ok(
-            await self._request("Identify", method="POST", json_body=body)
-        )
+        return self._post_ok(await self._request("Identify", method="POST", json_body=body))
 
     @staticmethod
     def _post_ok(result: Optional[dict]) -> bool:
@@ -601,9 +657,17 @@ class CrestronNVXDevice:
         except (KeyError, TypeError):
             return False
 
+        if not isinstance(actions, list):
+            return False
         saw_result = False
         for action in actions:
-            for item in action.get("Results", []):
+            if not isinstance(action, dict) or not isinstance(action.get("Results"), list):
+                return False
+            if not action["Results"]:
+                return False
+            for item in action["Results"]:
+                if not isinstance(item, dict):
+                    return False
                 saw_result = True
                 status_id = item.get("StatusId")
                 if status_id != 0:
@@ -656,11 +720,13 @@ class CrestronNVXAPI:
             verify_ssl=self._verify_ssl,
             name=name,
         )
-        await device.login()
+        try:
+            await device.login()
+        except BaseException:
+            await device.logout()
+            raise
         self.devices[name] = device
-        _LOGGER.info(
-            "Added %s device: %s at %s", device.device_mode or "unknown", name, host
-        )
+        _LOGGER.info("Added %s device: %s at %s", device.device_mode or "unknown", name, host)
         return device
 
     def get_device(self, name: str) -> Optional[CrestronNVXDevice]:

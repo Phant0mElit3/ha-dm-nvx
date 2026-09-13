@@ -1,4 +1,5 @@
 """Diagnostics support for the Crestron NVX integration."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -10,7 +11,18 @@ from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
 
-TO_REDACT = {CONF_PASSWORD, CONF_USERNAME}
+TO_REDACT = {
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    "host",
+    "name",
+    "title",
+    "unique_id",
+    "serial_number",
+    "entity_id_prefix",
+    "ip_address",
+    "mac_address",
+}
 
 
 async def async_get_config_entry_diagnostics(
@@ -41,10 +53,16 @@ async def async_get_config_entry_diagnostics(
                     "identify_supported": device.identify_supported,
                     "test_patterns": device.test_patterns,
                     "latest_data_keys": sorted((coordinator_data or {}).keys()),
+                    "last_update_success": coordinator.last_update_success if coordinator else None,
+                    "status": {
+                        key: value
+                        for key, value in (coordinator_data or {}).items()
+                        if key in ("video", "ethernet", "identify", "test_pattern")
+                    },
                 }
             )
 
     return {
         "entry": async_redact_data(entry.as_dict(), TO_REDACT),
-        "devices": devices,
+        "devices": async_redact_data(devices, TO_REDACT),
     }

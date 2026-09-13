@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.2.0
+
+- Fix recursive login attempts, handle HTTP 401, and serialize concurrent
+  session renewal without repeating capability discovery.
+- Surface failed polls as unavailable and invalid credentials as a Home
+  Assistant reauthentication prompt. Close sessions on failed setup and unload.
+- Add reauthentication, connection reconfiguration and polling-interval options.
+  Preserve entity and device identifiers when the same device changes address.
+- Distinguish duplicate source names, retain unknown current routes in selects,
+  and add independent audio Off. Report rejected commands to service callers.
+- Fix CEC failure backoff and automation examples, serialize OSD messages and
+  clean up background tasks. Tie camera, CEC and OSD availability to device polling.
+- Redact device identity and credentials in diagnostics; include polling status.
+- Correct the Home Assistant minimum to 2024.12 for the options and notify APIs.
+- Repair HACS and Hassfest metadata, bundle brand assets, add regression tests,
+  CI compatibility checks, issue templates and versioned release packaging.
+
 ## 2.1.1
 
 - Adds native Home Assistant binary sensors for HDMI signal/sink and network
@@ -23,4 +40,3 @@
 - Adds optional preview camera support.
 - Adds OSD notify and display-duration entities where supported.
 - Adds CEC event listener support for recognized HDMI-CEC remote commands.
-

@@ -1,0 +1,29 @@
+name: Bug report
+description: Report a connection, routing, entity or installation problem.
+body:
+  - type: input
+    id: versions
+    attributes:
+      label: Home Assistant and integration versions
+      placeholder: "Home Assistant 2026.9 / integration 2.2.0"
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: NVX model, firmware and role
+      placeholder: "DM-NVX-352 / 7.1.5259.00090 / receiver"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include expected behavior and what actually happened.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Logs and diagnostics
+      description: Attach integration diagnostics and relevant logs. Review attachments and remove credentials or other private information before posting.

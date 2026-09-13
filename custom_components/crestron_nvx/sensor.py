@@ -1,4 +1,5 @@
 """Sensor platform for Crestron NVX."""
+
 from __future__ import annotations
 
 from homeassistant.components.sensor import SensorEntity
@@ -53,7 +54,7 @@ class CrestronNVXResolutionSensor(CrestronNVXSensorBase):
         """Initialize the resolution sensor."""
         super().__init__(coordinator, device)
         self._attr_name = f"{device.name} Resolution"
-        self._attr_unique_id = f"{device.host}_resolution"
+        self._attr_unique_id = f"{device.entity_id_prefix}_resolution"
         self._attr_icon = "mdi:video"
 
     @property
@@ -81,7 +82,7 @@ class CrestronNVXVideoConnectionSensor(CrestronNVXSensorBase):
         super().__init__(coordinator, device)
         label = "Sink Connected" if device.is_receiver else "Signal Detected"
         self._attr_name = f"{device.name} {label}"
-        self._attr_unique_id = f"{device.host}_video_connected"
+        self._attr_unique_id = f"{device.entity_id_prefix}_video_connected"
         self._attr_icon = "mdi:video-input-hdmi"
 
     @property
@@ -104,7 +105,7 @@ class CrestronNVXHDCPSensor(CrestronNVXSensorBase):
         """Initialize the HDCP sensor."""
         super().__init__(coordinator, device)
         self._attr_name = f"{device.name} HDCP State"
-        self._attr_unique_id = f"{device.host}_hdcp_state"
+        self._attr_unique_id = f"{device.entity_id_prefix}_hdcp_state"
         self._attr_icon = "mdi:shield-lock"
 
     @property
@@ -121,7 +122,7 @@ class CrestronNVXNetworkSensor(CrestronNVXSensorBase):
         """Initialize the network sensor."""
         super().__init__(coordinator, device)
         self._attr_name = f"{device.name} Network Status"
-        self._attr_unique_id = f"{device.host}_network_status"
+        self._attr_unique_id = f"{device.entity_id_prefix}_network_status"
         self._attr_icon = "mdi:ethernet"
 
     @property

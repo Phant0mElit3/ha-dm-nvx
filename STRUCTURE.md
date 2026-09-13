@@ -1,63 +1,33 @@
 # Repository Structure
 
-This repository follows the Home Assistant custom component standard structure:
+| Path | Purpose |
+| --- | --- |
+| `custom_components/crestron_nvx/` | Complete installable integration |
+| `__init__.py` inside the integration | Entry lifecycle and polling coordinator |
+| `crestron_nvx_api.py` | Authentication, REST requests, routing, OSD and CEC decoding |
+| `config_flow.py` | Setup, reauthentication, reconfiguration and options |
+| `entity.py` | Stable device identity and command-result handling |
+| `sensor.py`, `binary_sensor.py` | Video and primary-network status |
+| `select.py`, `switch.py` | Routing, input selection, test patterns, output and Identify |
+| `event.py` | Passive CEC listener with cancellation and failure backoff |
+| `notify.py`, `number.py` | OSD messages, auto-clear and restored duration |
+| `camera.py` | Opt-in JPEG snapshots |
+| `diagnostics.py` | Redacted connection/capability diagnostics |
+| `strings.json`, `translations/en.json` | Setup and options translations |
+| `brand/` inside the integration | Bundled integration icons |
+| `tests/` | Automated API and Home Assistant regression tests |
+| `test_live.py` | Interactive hardware harness; separate from pytest |
+| `scripts/build_release.py` | Version-checked manual-install ZIP |
+| `.github/workflows/` | Tests, HACS/Hassfest validation and releases |
+| `.github/ISSUE_TEMPLATE/` | Bug and feature request forms |
+| `.env.example` | Placeholder hardware-test configuration |
+| `README.md`, `INSTALLATION.md` | User documentation |
+| `API_DOCUMENTATION.md` | Existing hardware observations and API notes |
+| `CONTRIBUTING.md` | Developer checks and release instructions |
+| `CHANGELOG.md`, `VERSION` | Release history and version |
+| `hacs.json` | HACS installation metadata |
+| `LICENSE`, `NOTICE` | License and trademark attribution |
 
-```
-ha-dm-nvx/
-├── .env                             # Real device creds for test_live.py (gitignored)
-├── .gitignore                       # Git ignore rules
-├── LICENSE                          # MIT License
-├── README.md                        # Main documentation
-├── VERSION                          # Version tracking
-├── hacs.json                        # HACS metadata
-├── icon.png, icon@2x.png            # HACS store icon
-├── info.md                          # HACS store description
-├── INSTALLATION.md                  # Installation guide
-├── API_DOCUMENTATION.md             # Verified Crestron DM NVX REST API reference
-├── test_live.py                     # Manual regression harness against real hardware
-└── custom_components/
-    └── crestron_nvx/                # Integration module
-        ├── __init__.py              # Integration setup, DataUpdateCoordinator
-        ├── manifest.json            # Integration metadata
-        ├── strings.json             # UI strings
-        ├── const.py                 # Constants
-        ├── config_flow.py           # Config flow (UI setup, auto-detects device role)
-        ├── crestron_nvx_api.py      # Real DM NVX REST API client (auth, AvRouting, CEC decode, OSD)
-        ├── binary_sensor.py         # Native HDMI/network connectivity binary sensors
-        ├── diagnostics.py           # Redacted HA diagnostics export
-        ├── entity.py                # Shared device_info builder (real model, config URL, firmware)
-        ├── sensor.py                # Status sensors (all devices)
-        ├── select.py                # Stream/audio/HDMI-input/test-pattern selects (AvRouting + DeviceSpecific + TestPatternConfig)
-        ├── switch.py                # Audio Follows Video and HDMI Output toggles (receivers)
-        ├── notify.py                # OSD message notify entity (receivers with OSD support)
-        ├── number.py                # OSD display duration setting (receivers with OSD support)
-        ├── event.py                 # CEC command listener (transmitters, via Longpoll)
-        ├── camera.py                # Preview snapshot camera, opt-in via options (both roles)
-        └── translations/
-            └── en.json              # English translations
-```
-
-## Installation
-
-### HACS (Recommended)
-1. Open HACS
-2. Click "Integrations"
-3. Click the menu (⋮) → "Custom repositories"
-4. Add `https://github.com/Phant0mElit3/ha-dm-nvx`
-5. Select category "Integration"
-6. Install "Crestron DM NVX"
-
-### Manual
-1. Copy `custom_components/crestron_nvx` to your Home Assistant `config/custom_components/` directory
-2. Restart Home Assistant
-3. Add integration via UI
-
-## For Development
-
-```bash
-# Clone repository
-git clone https://github.com/Phant0mElit3/ha-dm-nvx.git
-
-# Link to Home Assistant for testing
-ln -s $(pwd)/custom_components/crestron_nvx ~/.homeassistant/custom_components/
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for local testing. Generated archives
+live in `dist/` and are not committed. Real `.env` credentials and Python
+test caches are also ignored.

@@ -1,20 +1,42 @@
 """Select platforms for Crestron NVX: network source, audio source, and HDMI input switching."""
+
 from __future__ import annotations
 
-import logging
+from collections import Counter
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .entity import crestron_device_info
-
-_LOGGER = logging.getLogger(__name__)
+from .entity import async_run_command, crestron_device_info
 
 OFF_OPTION = "Off"
+
+
+def source_options(streams: dict, current_uid: str | None) -> dict[str, str]:
+    """Keep duplicate/reserved source names selectable and current routes visible."""
+    names = {
+        uid: info.get("SessionName") or f"Unnamed ({uid})"
+        for uid, info in streams.items()
+        if isinstance(info, dict)
+    }
+    counts = Counter(names.values())
+    options = {OFF_OPTION: ""}
+    for uid, name in sorted(names.items(), key=lambda item: (item[1], item[0])):
+        label = f"{name} ({uid})" if name == OFF_OPTION or counts[name] > 1 else name
+        while label in options:
+            label = f"{label} ({uid})"
+        options[label] = uid
+    if current_uid and current_uid not in options.values():
+        label = f"Unknown ({current_uid})"
+        while label in options:
+            label += f" ({current_uid})"
+        options[label] = current_uid
+    return options
 
 
 async def async_setup_entry(
@@ -46,8 +68,7 @@ async def async_setup_entry(
 class CrestronNVXStreamSelect(CoordinatorEntity, SelectEntity):
     """Select entity for switching a receiver's source via AvRouting.
 
-    Switches video, audio and USB together (verified live against real
-    hardware) - writing StreamReceive's MulticastAddress/StreamLocation
+    Switches video; audio and USB follow according to device settings - writing StreamReceive's MulticastAddress/StreamLocation
     directly either has no effect or leaves audio on the old source, since
     this fleet's audio is a separate breakaway subscription that only the
     AvRouting object keeps in sync with video.
@@ -62,117 +83,64 @@ class CrestronNVXStreamSelect(CoordinatorEntity, SelectEntity):
         super().__init__(coordinator)
         self.device = device
         self._attr_name = f"{device.name} Stream Source"
-        self._attr_unique_id = f"{device.host}_stream_source"
+        self._attr_unique_id = f"{device.entity_id_prefix}_stream_source"
         self._attr_icon = "mdi:video-input-hdmi"
         self._attr_device_info = crestron_device_info(device)
 
-    def _streams(self) -> dict[str, dict]:
-        return (self.coordinator.data or {}).get("discovered_streams") or {}
+    def _source_options(self) -> dict[str, str]:
+        data = self.coordinator.data or {}
+        route = data.get("route") or {}
+        return source_options(data.get("discovered_streams") or {}, route.get(self._route_key))
+
+    _route_key = "VideoSource"
 
     @property
     def options(self) -> list[str]:
-        """Return available source names, plus Off."""
-        names = [info.get("SessionName") for info in self._streams().values() if info.get("SessionName")]
-        return [OFF_OPTION, *names]
+        return list(self._source_options())
 
     @property
     def current_option(self) -> str | None:
-        """Return the currently routed source name, or Off."""
         route = (self.coordinator.data or {}).get("route")
-        if not route:
+        if not route or self._route_key not in route:
             return None
-        current_uid = route.get("VideoSource")
-        if not current_uid:
-            return OFF_OPTION
-        stream = self._streams().get(current_uid)
-        if stream:
-            return stream.get("SessionName")
-        return f"Unknown ({current_uid})"
+        uid = route[self._route_key]
+        return next(
+            (label for label, source in self._source_options().items() if source == uid), None
+        )
 
     async def async_select_option(self, option: str) -> None:
-        """Switch to the selected source, or clear routing if Off."""
-        if option == OFF_OPTION:
-            success = await self.device.set_route_off()
-        else:
-            target_uid = next(
-                (uid for uid, info in self._streams().items() if info.get("SessionName") == option),
-                None,
-            )
-            if target_uid is None:
-                _LOGGER.error("Could not find source UID for option: %s", option)
-                return
-            success = await self.device.set_route(target_uid)
-
-        if success:
-            await self.coordinator.async_request_refresh()
-        else:
-            _LOGGER.error("Failed to switch %s to source: %s", self.device.host, option)
+        sources = self._source_options()
+        if option not in sources:
+            raise ServiceValidationError("The selected NVX source is no longer available")
+        uid = sources[option]
+        await async_run_command(
+            self.coordinator, self.device.set_route(uid) if uid else self.device.set_route_off()
+        )
 
 
-class CrestronNVXAudioSourceSelect(CoordinatorEntity, SelectEntity):
-    """Independent audio source select, for anyone not running audio-follows-video.
+class CrestronNVXAudioSourceSelect(CrestronNVXStreamSelect):
+    """Independent audio routing, available while audio-follow is disabled."""
 
-    Only meaningful - and only shown as available - when the "Audio Follows
-    Video" switch (switch.py) is off. Writes AudioSource alone via
-    AvRouting, verified live not to disturb VideoSource/UsbSource.
-    """
+    _route_key = "AudioSource"
 
     def __init__(self, coordinator, device):
-        """Initialize the select entity."""
-        super().__init__(coordinator)
-        self.device = device
+        super().__init__(coordinator, device)
         self._attr_name = f"{device.name} Audio Source"
-        self._attr_unique_id = f"{device.host}_audio_source"
+        self._attr_unique_id = f"{device.entity_id_prefix}_audio_source"
         self._attr_icon = "mdi:volume-high"
-        self._attr_device_info = crestron_device_info(device)
-
-    def _streams(self) -> dict[str, dict]:
-        return (self.coordinator.data or {}).get("discovered_streams") or {}
 
     @property
     def available(self) -> bool:
-        """Greyed out while Audio Follows Video is on - it owns AudioSource then."""
-        if not super().available:
-            return False
-        route_control = (self.coordinator.data or {}).get("route_control") or {}
-        return not route_control.get("IsSecondaryAudioFollowsVideoEnabled", True)
-
-    @property
-    def options(self) -> list[str]:
-        """Return available source names."""
-        return [
-            info.get("SessionName")
-            for info in self._streams().values()
-            if info.get("SessionName")
-        ]
-
-    @property
-    def current_option(self) -> str | None:
-        """Return the currently routed audio source name."""
-        route = (self.coordinator.data or {}).get("route")
-        if not route:
-            return None
-        current_uid = route.get("AudioSource")
-        if not current_uid:
-            return None
-        stream = self._streams().get(current_uid)
-        return stream.get("SessionName") if stream else f"Unknown ({current_uid})"
+        control = (self.coordinator.data or {}).get("route_control") or {}
+        return super().available and control.get("IsSecondaryAudioFollowsVideoEnabled") is False
 
     async def async_select_option(self, option: str) -> None:
-        """Switch audio to the selected source, independent of video."""
-        target_uid = next(
-            (uid for uid, info in self._streams().items() if info.get("SessionName") == option),
-            None,
-        )
-        if target_uid is None:
-            _LOGGER.error("Could not find source UID for option: %s", option)
-            return
-
-        success = await self.device.set_audio_source(target_uid)
-        if success:
-            await self.coordinator.async_request_refresh()
-        else:
-            _LOGGER.error("Failed to switch %s audio to source: %s", self.device.host, option)
+        if not self.available:
+            raise ServiceValidationError("Disable Audio Follows Video before routing audio")
+        sources = self._source_options()
+        if option not in sources:
+            raise ServiceValidationError("The selected NVX source is no longer available")
+        await async_run_command(self.coordinator, self.device.set_audio_source(sources[option]))
 
 
 class CrestronNVXLocalSourceSelect(CoordinatorEntity, SelectEntity):
@@ -190,9 +158,11 @@ class CrestronNVXLocalSourceSelect(CoordinatorEntity, SelectEntity):
         super().__init__(coordinator)
         self.device = device
         self._attr_name = f"{device.name} Video Input"
-        self._attr_unique_id = f"{device.host}_video_input"
+        self._attr_unique_id = f"{device.entity_id_prefix}_video_input"
         self._attr_icon = "mdi:swap-horizontal"
-        self._attr_options = ["Stream"] + [f"Local Input {i + 1}" for i in range(device.hdmi_inputs)]
+        self._attr_options = ["Stream"] + [
+            f"Local Input {i + 1}" for i in range(device.hdmi_inputs)
+        ]
         self._attr_device_info = crestron_device_info(device)
 
     @property
@@ -202,7 +172,7 @@ class CrestronNVXLocalSourceSelect(CoordinatorEntity, SelectEntity):
         if value == "Stream":
             return "Stream"
         if value and value.startswith("Input"):
-            return f"Local Input {value[len('Input'):]}"
+            return f"Local Input {value[len('Input') :]}"
         return None
 
     async def async_select_option(self, option: str) -> None:
@@ -213,11 +183,9 @@ class CrestronNVXLocalSourceSelect(CoordinatorEntity, SelectEntity):
             index = option.removeprefix("Local Input ").strip()
             value = f"Input{index}"
 
-        success = await self.device.set_video_source(value)
-        if success:
-            await self.coordinator.async_request_refresh()
-        else:
-            _LOGGER.error("Failed to set %s video input to: %s", self.device.host, option)
+        if option not in self.options:
+            raise ServiceValidationError("Invalid NVX option")
+        await async_run_command(self.coordinator, self.device.set_video_source(value))
 
 
 class CrestronNVXTransmitterInputSelect(CoordinatorEntity, SelectEntity):
@@ -234,7 +202,7 @@ class CrestronNVXTransmitterInputSelect(CoordinatorEntity, SelectEntity):
         super().__init__(coordinator)
         self.device = device
         self._attr_name = f"{device.name} HDMI Input"
-        self._attr_unique_id = f"{device.host}_hdmi_input"
+        self._attr_unique_id = f"{device.entity_id_prefix}_hdmi_input"
         self._attr_icon = "mdi:video-input-hdmi"
         self._attr_options = [f"Input {i + 1}" for i in range(device.hdmi_inputs)]
         self._attr_device_info = crestron_device_info(device)
@@ -244,17 +212,15 @@ class CrestronNVXTransmitterInputSelect(CoordinatorEntity, SelectEntity):
         """Return "Input N", from DeviceSpecific.VideoSource."""
         value = ((self.coordinator.data or {}).get("device_specific") or {}).get("VideoSource")
         if value and value.startswith("Input"):
-            return f"Input {value[len('Input'):]}"
+            return f"Input {value[len('Input') :]}"
         return None
 
     async def async_select_option(self, option: str) -> None:
         """Switch the active HDMI input."""
         index = option.removeprefix("Input ").strip()
-        success = await self.device.set_video_source(f"Input{index}")
-        if success:
-            await self.coordinator.async_request_refresh()
-        else:
-            _LOGGER.error("Failed to set %s HDMI input to: %s", self.device.host, option)
+        if option not in self.options:
+            raise ServiceValidationError("Invalid NVX option")
+        await async_run_command(self.coordinator, self.device.set_video_source(f"Input{index}"))
 
 
 class CrestronNVXTestPatternSelect(CoordinatorEntity, SelectEntity):
@@ -275,7 +241,7 @@ class CrestronNVXTestPatternSelect(CoordinatorEntity, SelectEntity):
         super().__init__(coordinator)
         self.device = device
         self._attr_name = f"{device.name} Test Pattern"
-        self._attr_unique_id = f"{device.host}_test_pattern"
+        self._attr_unique_id = f"{device.entity_id_prefix}_test_pattern"
         self._attr_icon = "mdi:contrast-box"
         self._attr_options = device.test_patterns
         self._attr_device_info = crestron_device_info(device)
@@ -287,8 +253,6 @@ class CrestronNVXTestPatternSelect(CoordinatorEntity, SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         """Set the active test pattern, or restore the real source with Off."""
-        success = await self.device.set_test_pattern(option)
-        if success:
-            await self.coordinator.async_request_refresh()
-        else:
-            _LOGGER.error("Failed to set %s test pattern to: %s", self.device.host, option)
+        if option not in self.options:
+            raise ServiceValidationError("Invalid NVX option")
+        await async_run_command(self.coordinator, self.device.set_test_pattern(option))

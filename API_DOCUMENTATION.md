@@ -1,11 +1,34 @@
 # Crestron NVX REST API Reference
 
-This documents the real Crestron DM NVX REST API (the "CresNext" JSON
-interface) as used by this integration. Every endpoint below was verified
-against live hardware (DM-NVX-E30, DM-NVX-352, DM-NVX-350, DM-NVX-D30,
-firmware 7.1.5259.00090), not just read from the docs.
+This documents the Crestron DM NVX REST API (the "CresNext" JSON interface)
+as used by this integration. Existing hardware observations cover DM-NVX-E30,
+DM-NVX-352, DM-NVX-350 and DM-NVX-D30 on firmware 7.1.5259.00090.
+Identify is documented against the official API; availability is probed.
+The 2.2.0 maintenance changes have automated regression coverage but have not
+yet been revalidated on physical hardware.
 
 Official reference: https://sdkcon78221.crestron.com/sdk/DM_NVX_REST_API/
+
+## Client Reliability in 2.2.0
+
+- Login verifies DeviceMode once without recursive renewal. Login POST may
+  return 200 or a 302/303 redirect, as described in Crestron's authentication
+  examples; the authenticated probe confirms success.
+- Concurrent session renewal is serialized. Ordinary renewal does not repeat
+  all capability discovery calls.
+- HTTP 401, 403 and redirects trigger one renewal/retry. A second rejection
+  raises an authentication error for Home Assistant reauthentication.
+- Network timeouts, malformed JSON and HTTP failures raise connection errors.
+  They do not become successful empty status updates. A 404 GET can indicate
+  an unsupported object; required status and longpoll still reject it.
+- Every POST result must succeed. A failure is reported to the service caller.
+- Source labels distinguish duplicate names and preserve unknown current
+  routes. Audio Off writes only an empty AudioSource.
+- Reconfiguration retains the original entity identifier prefix and verifies
+  the physical device by serial number before accepting a changed address.
+
+See the [official authentication procedure](https://sdkcon78221.crestron.com/sdk/DM_NVX_REST_API/Content/Topics/Authentication.htm)
+and [Identify object](https://sdkcon78221.crestron.com/sdk/DM_NVX_REST_API/Content/Topics/Objects/Identify.htm).
 
 ## Authentication
 
@@ -29,7 +52,7 @@ been installed.
    `200 OK` containing the login page's HTML instead of JSON, never notices
    the session died, and never re-authenticates - every subsequent request
    then fails the same way forever. **Disable automatic redirect-following
-   on these requests** and treat any of `301/302/303/307/308/403` as
+   on these requests** and treat any of `301/302/303/307/308/401/403` as
    "re-run the login flow", not just `403`. This was the root cause of this
    integration not recovering after a device restarted or a session was
    otherwise invalidated - see `crestron_nvx_api.py`'s `_REAUTH_STATUSES`.

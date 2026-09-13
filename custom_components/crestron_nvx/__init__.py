@@ -1,20 +1,25 @@
 """The Crestron NVX integration."""
+
 from __future__ import annotations
 
 import logging
 from datetime import timedelta
 
 import aiohttp
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import CONF_SCAN_INTERVAL, CONF_VERIFY_SSL, DOMAIN
-from .crestron_nvx_api import CrestronNVXAPI, CrestronNVXConnectionError, CrestronNVXDevice
+from .crestron_nvx_api import (
+    CrestronNVXAPI,
+    CrestronNVXAuthError,
+    CrestronNVXConnectionError,
+    CrestronNVXDevice,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,46 +40,66 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
 
     devices_config = entry.data.get("devices", [])
+    if not devices_config:
+        raise ConfigEntryNotReady("No NVX devices configured")
     verify_ssl = devices_config[0].get(CONF_VERIFY_SSL, False) if devices_config else False
     session = async_create_clientsession(
         hass,
         verify_ssl=verify_ssl,
+        auto_cleanup=False,
         cookie_jar=aiohttp.CookieJar(unsafe=True),
     )
     api = CrestronNVXAPI(verify_ssl=verify_ssl, session=session)
 
-    for device_config in devices_config:
-        try:
-            await api.add_device(
+    try:
+        for device_config in devices_config:
+            device = await api.add_device(
                 host=device_config[CONF_HOST],
                 name=device_config["name"],
                 username=device_config[CONF_USERNAME],
                 password=device_config[CONF_PASSWORD],
             )
-        except CrestronNVXConnectionError as err:
-            # A device being unreachable at startup (still booting, briefly
-            # off the network, HA starting before it does) must not be a
-            # hard failure - ConfigEntryNotReady tells HA to keep retrying
-            # setup with its own backoff instead of leaving the whole entry
-            # (all configured devices, not just this one) permanently failed
-            # until someone notices and manually reloads it.
-            await api.close()
-            raise ConfigEntryNotReady(
-                f"Could not connect to {device_config[CONF_HOST]}: {err}"
-            ) from err
-
-    scan_interval = entry.data.get(CONF_SCAN_INTERVAL, 30)
-    coordinators: dict[str, CrestronNVXDataUpdateCoordinator] = {}
-    for device_name, device in api.devices.items():
-        coordinator = CrestronNVXDataUpdateCoordinator(
-            hass, device=device, update_interval=timedelta(seconds=scan_interval)
+            device.entity_id_prefix = device_config.get("entity_id_prefix", device.host)
+        scan_interval = entry.options.get(
+            CONF_SCAN_INTERVAL, entry.data.get(CONF_SCAN_INTERVAL, 30)
         )
-        await coordinator.async_config_entry_first_refresh()
-        coordinators[device_name] = coordinator
+        coordinators: dict[str, CrestronNVXDataUpdateCoordinator] = {}
+        for device_name, device in api.devices.items():
+            coordinator = CrestronNVXDataUpdateCoordinator(
+                hass, device=device, update_interval=timedelta(seconds=scan_interval)
+            )
+            await coordinator.async_config_entry_first_refresh()
+            coordinators[device_name] = coordinator
+        configs = [
+            {
+                **config,
+                "serial_number": api.devices[config["name"]].serial_number,
+                "entity_id_prefix": config.get("entity_id_prefix", config[CONF_HOST]),
+            }
+            for config in devices_config
+        ]
+        if configs != devices_config:
+            hass.config_entries.async_update_entry(entry, data={**entry.data, "devices": configs})
+        hass.data[DOMAIN][entry.entry_id] = {
+            "api": api,
+            "session": session,
+            "coordinators": coordinators,
+        }
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except BaseException as err:
+        if entry.entry_id in hass.data[DOMAIN]:
+            await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+            hass.data[DOMAIN].pop(entry.entry_id, None)
+        try:
+            await api.close()
+        finally:
+            await session.close()
+        if isinstance(err, CrestronNVXAuthError):
+            raise ConfigEntryAuthFailed(str(err)) from err
+        if isinstance(err, CrestronNVXConnectionError):
+            raise ConfigEntryNotReady(str(err)) from err
+        raise
 
-    hass.data[DOMAIN][entry.entry_id] = {"api": api, "coordinators": coordinators}
-
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
     return True
@@ -90,6 +115,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         data = hass.data[DOMAIN].pop(entry.entry_id)
         await data["api"].close()
+        await data["session"].close()
 
     return unload_ok
 
@@ -113,6 +139,8 @@ class CrestronNVXDataUpdateCoordinator(DataUpdateCoordinator):
                 "video": await self.device.get_video_status(),
                 "ethernet": await self.device.get_ethernet_status(),
             }
+            if data["video"] is None or data["ethernet"] is None:
+                raise UpdateFailed("Device did not return video and Ethernet status")
             if self.device.hdmi_inputs > 0:
                 data["device_specific"] = await self.device.get_device_specific()
             if self.device.test_patterns:
@@ -124,5 +152,7 @@ class CrestronNVXDataUpdateCoordinator(DataUpdateCoordinator):
                 data["route"] = await self.device.get_current_route()
                 data["route_control"] = await self.device.get_route_control()
             return data
-        except Exception as err:
+        except CrestronNVXAuthError as err:
+            raise ConfigEntryAuthFailed(str(err)) from err
+        except CrestronNVXConnectionError as err:
             raise UpdateFailed(f"Error communicating with {self.device.host}: {err}") from err

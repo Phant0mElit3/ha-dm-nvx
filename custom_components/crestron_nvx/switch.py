@@ -1,7 +1,6 @@
 """Switch platform for Crestron NVX - Audio Follows Video toggle (receivers)."""
-from __future__ import annotations
 
-import logging
+from __future__ import annotations
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
@@ -10,9 +9,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .entity import crestron_device_info
-
-_LOGGER = logging.getLogger(__name__)
+from .entity import async_run_command, crestron_device_info
 
 
 async def async_setup_entry(
@@ -31,8 +28,13 @@ async def async_setup_entry(
         if device.identify_supported:
             entities.append(CrestronNVXIdentifySwitch(coordinator, device))
         if device.is_receiver:
-            entities.append(CrestronNVXAudioFollowsVideoSwitch(coordinator, device))
-            entities.append(CrestronNVXHdmiOutputSwitch(coordinator, device))
+            status = coordinator.data or {}
+            if isinstance(
+                (status.get("route_control") or {}).get("IsSecondaryAudioFollowsVideoEnabled"), bool
+            ):
+                entities.append(CrestronNVXAudioFollowsVideoSwitch(coordinator, device))
+            if isinstance((status.get("video") or {}).get("output_disabled"), bool):
+                entities.append(CrestronNVXHdmiOutputSwitch(coordinator, device))
     async_add_entities(entities)
 
 
@@ -51,29 +53,23 @@ class CrestronNVXAudioFollowsVideoSwitch(CoordinatorEntity, SwitchEntity):
         super().__init__(coordinator)
         self.device = device
         self._attr_name = f"{device.name} Audio Follows Video"
-        self._attr_unique_id = f"{device.host}_audio_follows_video"
+        self._attr_unique_id = f"{device.entity_id_prefix}_audio_follows_video"
         self._attr_icon = "mdi:link-variant"
         self._attr_device_info = crestron_device_info(device)
 
     @property
-    def is_on(self) -> bool:
+    def is_on(self) -> bool | None:
         """Return whether audio currently follows video."""
         route_control = (self.coordinator.data or {}).get("route_control") or {}
-        return bool(route_control.get("IsSecondaryAudioFollowsVideoEnabled"))
+        return route_control.get("IsSecondaryAudioFollowsVideoEnabled")
 
     async def async_turn_on(self, **kwargs) -> None:
         """Enable audio-follows-video and immediately re-sync audio to the current video source."""
-        if await self.device.set_audio_follows_video(True):
-            await self.coordinator.async_request_refresh()
-        else:
-            _LOGGER.error("Failed to enable audio-follows-video on %s", self.device.host)
+        await async_run_command(self.coordinator, self.device.set_audio_follows_video(True))
 
     async def async_turn_off(self, **kwargs) -> None:
         """Disable audio-follows-video, freeing the Audio Source select for independent use."""
-        if await self.device.set_audio_follows_video(False):
-            await self.coordinator.async_request_refresh()
-        else:
-            _LOGGER.error("Failed to disable audio-follows-video on %s", self.device.host)
+        await async_run_command(self.coordinator, self.device.set_audio_follows_video(False))
 
 
 class CrestronNVXIdentifySwitch(CoordinatorEntity, SwitchEntity):
@@ -84,7 +80,7 @@ class CrestronNVXIdentifySwitch(CoordinatorEntity, SwitchEntity):
         super().__init__(coordinator)
         self.device = device
         self._attr_name = f"{device.name} Identify"
-        self._attr_unique_id = f"{device.host}_identify"
+        self._attr_unique_id = f"{device.entity_id_prefix}_identify"
         self._attr_icon = "mdi:led-on"
         self._attr_device_info = crestron_device_info(device)
 
@@ -95,17 +91,11 @@ class CrestronNVXIdentifySwitch(CoordinatorEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs) -> None:
         """Enable identify mode."""
-        if await self.device.set_identify(True):
-            await self.coordinator.async_request_refresh()
-        else:
-            _LOGGER.error("Failed to enable identify mode on %s", self.device.host)
+        await async_run_command(self.coordinator, self.device.set_identify(True))
 
     async def async_turn_off(self, **kwargs) -> None:
         """Disable identify mode."""
-        if await self.device.set_identify(False):
-            await self.coordinator.async_request_refresh()
-        else:
-            _LOGGER.error("Failed to disable identify mode on %s", self.device.host)
+        await async_run_command(self.coordinator, self.device.set_identify(False))
 
 
 class CrestronNVXHdmiOutputSwitch(CoordinatorEntity, SwitchEntity):
@@ -124,7 +114,7 @@ class CrestronNVXHdmiOutputSwitch(CoordinatorEntity, SwitchEntity):
         super().__init__(coordinator)
         self.device = device
         self._attr_name = f"{device.name} HDMI Output"
-        self._attr_unique_id = f"{device.host}_hdmi_output_enabled"
+        self._attr_unique_id = f"{device.entity_id_prefix}_hdmi_output_enabled"
         self._attr_icon = "mdi:video-input-hdmi"
         self._attr_device_info = crestron_device_info(device)
 
@@ -132,18 +122,13 @@ class CrestronNVXHdmiOutputSwitch(CoordinatorEntity, SwitchEntity):
     def is_on(self) -> bool:
         """Return True when the HDMI output is enabled (not force-disabled)."""
         video = (self.coordinator.data or {}).get("video") or {}
-        return not bool(video.get("output_disabled"))
+        disabled = video.get("output_disabled")
+        return None if disabled is None else not disabled
 
     async def async_turn_on(self, **kwargs) -> None:
         """Re-enable the HDMI output."""
-        if await self.device.set_output_disabled(False):
-            await self.coordinator.async_request_refresh()
-        else:
-            _LOGGER.error("Failed to enable HDMI output on %s", self.device.host)
+        await async_run_command(self.coordinator, self.device.set_output_disabled(False))
 
     async def async_turn_off(self, **kwargs) -> None:
         """Force-disable (blank) the HDMI output."""
-        if await self.device.set_output_disabled(True):
-            await self.coordinator.async_request_refresh()
-        else:
-            _LOGGER.error("Failed to disable HDMI output on %s", self.device.host)
+        await async_run_command(self.coordinator, self.device.set_output_disabled(True))

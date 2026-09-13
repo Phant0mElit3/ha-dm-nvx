@@ -1,140 +1,139 @@
-# Crestron DM NVX for Home Assistant - Installation Guide
+# Installation and Troubleshooting
 
-## Prerequisites
+## Requirements
 
-- Home Assistant 2023.8 or newer
-- Crestron DM NVX transmitters and/or receivers on your network, with
-  **authentication enabled on the device** (the real REST API requires it -
-  see [API_DOCUMENTATION.md](API_DOCUMENTATION.md))
-- Network connectivity from Home Assistant to each device on **port 443
-  (HTTPS)** - the API has no unauthenticated HTTP mode
-- Admin credentials for each device
+- Home Assistant 2024.12 or newer.
+- An NVX transmitter/receiver with authentication enabled.
+- Device admin credentials and HTTPS connectivity on port 443.
+- HACS for HACS installation, or access to the Home Assistant configuration directory.
 
-## Installation Methods
+The 2023.8 minimum advertised in earlier versions was incorrect for the
+notify entity and options-flow APIs already used by this integration.
 
-### Option 1: HACS Installation (Recommended)
+## HACS
 
-#### Step 1: Install HACS
-If you haven't already installed HACS, follow the instructions at: https://hacs.xyz/docs/setup/download
+1. [Install HACS](https://www.hacs.xyz/docs/use/download/download/) if needed.
+2. In HACS, open the menu and select **Custom repositories**.
+3. Add `https://github.com/Phant0mElit3/ha-dm-nvx`, type **Integration**.
+4. Download **Crestron DM NVX** and restart Home Assistant.
+5. Go to **Settings > Devices & services > Add integration** and search for
+   **Crestron DM NVX**.
 
-#### Step 2: Add Custom Repository
-1. Open HACS in your Home Assistant interface
-2. Click on "Integrations"
-3. Click the three dots (⋮) in the top right corner
-4. Select "Custom repositories"
-5. Add the repository URL: `https://github.com/Phant0mElit3/ha-dm-nvx`
-6. Select category: "Integration"
-7. Click "Add"
+[Open this repository in HACS](https://my.home-assistant.io/redirect/hacs_repository/?owner=Phant0mElit3&repository=ha-dm-nvx&category=integration).
+This is a custom repository, not a default-catalog listing.
 
-#### Step 3: Install Integration
-1. Find "Crestron DM NVX" in the HACS integrations list
-2. Click on it, then "Download"
-3. Restart Home Assistant
+## Manual Install
 
-### Option 2: Manual Installation
+Download the attached `crestron_nvx-<version>.zip` from the
+[latest release](https://github.com/Phant0mElit3/ha-dm-nvx/releases/latest).
+Extract it into the Home Assistant configuration directory. The resulting path
+must be `/config/custom_components/crestron_nvx/manifest.json` on Home Assistant OS.
 
-Copy `custom_components/crestron_nvx/` from this repository into your Home
-Assistant config directory, so you end up with:
+Alternatively, copy the entire `custom_components/crestron_nvx/` directory
+from the repository, including `translations/` and `brand/`.
+Restart Home Assistant, then add the integration.
 
-```
-/config/
-└── custom_components/
-    └── crestron_nvx/
-        ├── __init__.py
-        ├── binary_sensor.py
-        ├── camera.py
-        ├── config_flow.py
-        ├── const.py
-        ├── crestron_nvx_api.py
-        ├── diagnostics.py
-        ├── entity.py
-        ├── event.py
-        ├── manifest.json
-        ├── notify.py
-        ├── number.py
-        ├── select.py
-        ├── sensor.py
-        ├── strings.json
-        ├── switch.py
-        └── translations/
-            └── en.json
-```
+## Device Setup
 
-Then restart Home Assistant.
+Enter a friendly name, IP address or hostname, username, password, certificate
+verification setting and polling interval. Enter just the address, such as
+`192.0.2.10` or `nvx.local`, without a URL scheme, port or path.
 
-## Configuration
+Leave certificate verification off for factory self-signed certificates.
+Enable it when the device has a certificate trusted by Home Assistant.
+The connection remains HTTPS even when certificate verification is off.
 
-There is **no YAML configuration** - set up each device through the UI:
+Configure one entry per device. Role and optional capabilities are detected.
+There is no YAML device configuration.
 
-1. Settings → Devices & Services → **+ Add Integration**
-2. Search for "Crestron DM NVX"
-3. Fill in:
-   - **Device Name** - friendly name, used to name every entity for this device
-   - **IP Address or Hostname**
-   - **Username** / **Password**
-   - **Verify SSL Certificate** - leave unchecked unless you've installed a
-     trusted cert (devices ship with self-signed certs)
-   - **Update Interval** - status polling interval, seconds (default 30)
-4. Repeat for each device - one config entry per device. Transmitter vs.
-   receiver role is detected automatically from the device; there's nothing
-   to select.
+## Options and Reconfiguration
 
-## Verifying Installation
+**Configure/Options** controls the polling interval (10-300 seconds) and the
+preview camera. Saving options reloads the integration.
 
-1. **Settings > Devices & Services > Crestron DM NVX** - each device you added
-   should be listed.
-2. **Developer Tools → States**, filter by `crestron_nvx` - you should see:
-   - `sensor.<name>_resolution`, `sensor.<name>_hdcp_state`,
-     `sensor.<name>_network_status`, and `sensor.<name>_signal_detected`
-     (transmitters) or `sensor.<name>_sink_connected` (receivers)
-   - `binary_sensor.<name>_network_connected` and
-     `binary_sensor.<name>_signal_detected` (transmitters) or
-     `binary_sensor.<name>_sink_connected` (receivers)
-   - `select.<name>_stream_source` on receivers only
-   - `event.<name>_cec_command` on transmitters only
-3. **Test the select entity** (receivers) - pick a different source from the
-   dropdown and confirm the connected display actually switches.
-4. **Test the event entity** (transmitters) - press a button on the
-   connected source's remote (see the CEC troubleshooting note in
-   [README.md](README.md) re: Apple TV's Volume Control setting) and watch
-   for the event in Developer Tools → Events, or use it directly as a device
-   trigger in an automation.
+The entry menu's **Reconfigure** action changes the device address or
+credentials. Re-enter the password to validate the connection. The device
+serial must match; a different device requires a separate entry. Existing
+entity and device IDs are retained, including IDs from earlier versions.
+
+When saved credentials stop working, Home Assistant prompts for
+reauthentication. An offline device retries automatically.
+
+## Verify
+
+Open the device under **Settings > Devices & services > Crestron DM NVX**.
+Entity IDs are based on the name you supplied, not necessarily on
+`crestron_nvx`; use the device's entity list to find the actual IDs.
+
+- Confirm HDMI connection, resolution and network state.
+- On a receiver, choose a video stream and verify the display changes.
+- Disable Audio Follows Video to use the independent Audio Source select.
+- Enable preview in Options to create a camera on supported devices.
+- Use `notify.send_message` with the OSD entity on supported models.
+- For CEC, inspect the event entity's timestamp and `event_type` attribute.
+  Use a state trigger as shown in [the examples](configuration_example.yaml).
+
+Legacy text sensors for HDMI/network connectivity remain for existing
+automations. Prefer the native binary sensors for new automations.
 
 ## Troubleshooting
 
-### Integration not showing up
-- Confirm files are at `/config/custom_components/crestron_nvx/`
-- Check `manifest.json` is valid JSON
-- Restart Home Assistant again, then check Settings → System → Logs
+### Integration cannot be found
 
-### "Cannot connect" during setup
-- Confirm the device is reachable: try `https://<device-ip>/userlogin.html`
-  in a browser first (accept the self-signed cert warning) - if that
-  doesn't load, it's a network/firewall issue, not this integration
-- Confirm authentication is actually enabled on the device - the API has no
-  unauthenticated mode to fall back to
-- Check port 443 isn't blocked between Home Assistant and the device
+Check the component directory, restart Home Assistant and inspect
+**Settings > System > Logs**. Ensure the minimum Home Assistant version is met.
 
-### "Invalid auth" during setup
-- Double check username/password against what the device's own web UI
-  accepts
+### Cannot connect
 
-### No sources in the Stream Source dropdown
-- The source transmitter needs to actually be powered on and transmitting
-  before it's discoverable
-- Confirm receivers and transmitters are on the same network segment /
-  multicast routing and IGMP snooping are configured correctly between them
+Open `https://<device-address>/userlogin.html` and verify the device web UI
+loads. Check port 443, network routing and device authentication. A trusted
+certificate is required only when certificate verification is enabled.
 
-## Updating
+### Invalid authentication
 
-**HACS**: HACS will notify you of updates; click "Update" and restart Home
-Assistant.
+Verify the same credentials work in the device web UI. Reconfigure the
+integration or complete the reauthentication prompt after changing credentials.
+The client handles expired sessions, including login redirects and HTTP 401/403.
 
-**Manual**: replace the files in `/config/custom_components/crestron_nvx/`
-and restart Home Assistant.
+### No stream sources
 
-## Uninstalling
+Confirm the transmitter is powered and transmitting. Check NVX multicast,
+IGMP and discovery configuration across the relevant network segments.
+An existing route may appear as `Unknown (<ID>)` until discovery catches up.
+Duplicate names receive an ID suffix.
 
-1. Settings > Devices & Services > Crestron DM NVX > Delete (for each device)
-2. Delete `/config/custom_components/crestron_nvx/`
-3. Restart Home Assistant
+### No CEC commands
+
+The connected source must actually send CEC commands on HDMI input 1.
+For Apple TV, select HDMI-CEC volume control. IR/Bluetooth-only remote commands
+will not reach this listener. Supported events are `power_on`, `power_off`,
+`volume_up`, `volume_down` and `mute`; this integration does not send CEC.
+
+### Preview unavailable or blank
+
+Enable preview in Options. The device must expose its Preview object and
+return a JPEG; capabilities vary by model, firmware and content protection.
+The camera becomes unavailable while device polling is failing.
+
+### Switch state changes after a delay
+
+The integration reads actual device state. Some firmware accepts a command
+before applying it. Allow the next polling cycle to reconcile the change.
+
+## Diagnostics and Logs
+
+Use the entry menu to download diagnostics. Credentials, configured
+names/addresses and serial numbers are redacted. Review the file before sharing.
+Enable debug logging from the integration entry while reproducing an issue,
+then disable it and include only relevant log excerpts.
+
+Report bugs through [GitHub issues](https://github.com/Phant0mElit3/ha-dm-nvx/issues/new/choose).
+
+## Update or Remove
+
+For HACS updates, download the release and restart Home Assistant. For manual
+updates, replace the integration directory with the matching release contents
+and restart. Review the changelog first.
+
+To remove it, delete each integration entry, remove the repository in HACS
+(or the component directory for a manual install), then restart.

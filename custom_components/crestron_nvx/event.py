@@ -8,6 +8,7 @@ This entity listens for that traffic via /Device/Longpoll and turns each
 recognized command into a Home Assistant event an automation can trigger
 on. Nothing is ever sent back to the device from here.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -18,6 +19,7 @@ from homeassistant.components.event import EventEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CEC_EVENT_TYPES, DOMAIN
 from .crestron_nvx_api import decode_cec_message
@@ -40,36 +42,39 @@ async def async_setup_entry(
     api = data["api"]
 
     entities = [
-        CrestronNVXCecEvent(device)
+        CrestronNVXCecEvent(data["coordinators"][device.name], device)
         for device in api.devices.values()
-        if device.is_transmitter
+        if device.is_transmitter and device.hdmi_inputs > 0
     ]
     async_add_entities(entities)
 
 
-class CrestronNVXCecEvent(EventEntity):
+class CrestronNVXCecEvent(CoordinatorEntity, EventEntity):
     """Fires an HA event for each recognized CEC command from the source device."""
 
     _attr_should_poll = False
     _attr_event_types = CEC_EVENT_TYPES
 
-    def __init__(self, device):
+    def __init__(self, coordinator, device):
         """Initialize the CEC event entity."""
+        super().__init__(coordinator)
         self.device = device
         self._attr_name = f"{device.name} CEC Command"
-        self._attr_unique_id = f"{device.host}_cec_command"
+        self._attr_unique_id = f"{device.entity_id_prefix}_cec_command"
         self._attr_icon = "mdi:remote"
         self._attr_device_info = crestron_device_info(device)
         self._task: asyncio.Task | None = None
 
     async def async_added_to_hass(self) -> None:
         """Start the background CEC listener."""
+        await super().async_added_to_hass()
         self._task = self.hass.async_create_background_task(
             self._listen(), name=f"crestron_nvx_cec_{self.device.host}"
         )
 
     async def async_will_remove_from_hass(self) -> None:
         """Stop the background CEC listener."""
+        await super().async_will_remove_from_hass()
         if self._task:
             self._task.cancel()
             with suppress(asyncio.CancelledError):

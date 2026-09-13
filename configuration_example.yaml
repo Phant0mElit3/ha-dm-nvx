@@ -1,36 +1,36 @@
-# Crestron NVX Integration - Example Automations & Dashboard
-#
-# There is no YAML device configuration for this integration - devices are
-# set up entirely through Settings -> Devices & Services -> Add Integration.
-# Everything below assumes devices are already configured that way; replace
-# the entity_ids with your own (they're named after the "Device Name" you
-# gave each device during setup).
-
+# Example configuration.yaml sections. Merge into your existing sections.
+# Device setup is UI-only. Replace every entity ID with your actual entities.
+# For automations.yaml, use only the list under "automation".
 automation:
-  # React to a real CEC remote press from a source device (e.g. an Apple TV
-  # with Volume Control set to HDMI-CEC). The easiest way to build this is
-  # via the UI: Settings -> Automations -> Add -> choose a Device trigger on
-  # the "CEC Command" entity, which lists power_on/power_off/volume_up/
-  # volume_down/mute directly. The equivalent in YAML:
-  - alias: "Apple TV volume up -> living room speaker"
+  - alias: "Apple TV volume up"
+    mode: queued
     trigger:
-      - platform: event
-        event_type: event.crestron_nvx_atv_encoder_cec_command
+      - platform: state
+        entity_id: event.atv_encoder_cec_command
     condition:
       - condition: template
-        value_template: "{{ trigger.event.data.event_type == 'volume_up' }}"
+        value_template: >-
+          {{ trigger.from_state is not none and trigger.to_state is not none
+             and trigger.from_state.state not in ['unknown', 'unavailable']
+             and trigger.to_state.state not in ['unknown', 'unavailable']
+             and trigger.to_state.attributes.get('event_type') == 'volume_up' }}
     action:
       - service: media_player.volume_up
         target:
           entity_id: media_player.living_room_speaker
 
-  - alias: "Apple TV mute -> living room speaker"
+  - alias: "Apple TV mute"
+    mode: queued
     trigger:
-      - platform: event
-        event_type: event.crestron_nvx_atv_encoder_cec_command
+      - platform: state
+        entity_id: event.atv_encoder_cec_command
     condition:
       - condition: template
-        value_template: "{{ trigger.event.data.event_type == 'mute' }}"
+        value_template: >-
+          {{ trigger.from_state is not none and trigger.to_state is not none
+             and trigger.from_state.state not in ['unknown', 'unavailable']
+             and trigger.to_state.state not in ['unknown', 'unavailable']
+             and trigger.to_state.attributes.get('event_type') == 'mute' }}
     action:
       - service: media_player.volume_mute
         target:
@@ -38,8 +38,7 @@ automation:
         data:
           is_volume_muted: true
 
-  # Switch a receiver's source when a meeting starts, via the calendar
-  - alias: "Meeting Room - Switch to Laptop"
+  - alias: "Meeting room switch to laptop"
     trigger:
       - platform: calendar
         event: start
@@ -51,24 +50,22 @@ automation:
         data:
           option: "Laptop TX"
 
-  # Alert when a display loses signal
-  - alias: "Alert on Signal Loss"
+  - alias: "Alert on display connection loss"
     trigger:
       - platform: state
-        entity_id: sensor.main_display_rx_sink_connected
-        to: "disconnected"
+        entity_id: binary_sensor.main_display_rx_sink_connected
+        from: "on"
+        to: "off"
         for: "00:01:00"
     action:
-      - service: notify.mobile_app
+      - service: notify.mobile_app_your_phone
         data:
-          title: "AV Alert"
-          message: "Main Display has lost its downstream connection"
+          title: "AV alert"
+          message: "Main display has lost its HDMI connection"
 
 script:
-  # Switch several receivers to the same source at once
   switch_all_displays_to_camera:
-    alias: "Switch All Displays to Camera"
-    icon: mdi:video
+    alias: "Switch all displays to camera"
     sequence:
       - service: select.select_option
         target:
@@ -78,16 +75,27 @@ script:
         data:
           option: "Camera TX"
 
-# Example Lovelace dashboard
-#
+  show_av_message:
+    alias: "Show AV message"
+    sequence:
+      - service: number.set_value
+        target:
+          entity_id: number.main_display_rx_osd_display_duration
+        data:
+          value: 5
+      - service: notify.send_message
+        target:
+          entity_id: notify.main_display_rx_osd
+        data:
+          message: "Movie mode enabled"
+
+# Separate Lovelace manual card:
 # type: entities
-# title: Conference Room AV
+# title: Conference room AV
 # entities:
-#   - entity: sensor.main_display_rx_resolution
-#     name: Resolution
-#   - entity: sensor.main_display_rx_sink_connected
-#     name: Display Connected
-#   - entity: sensor.main_display_rx_hdcp_state
-#     name: HDCP
-#   - entity: select.main_display_rx_stream_source
-#     name: Video Source
+#   - sensor.main_display_rx_resolution
+#   - binary_sensor.main_display_rx_sink_connected
+#   - select.main_display_rx_stream_source
+#   - select.main_display_rx_audio_source
+#   - switch.main_display_rx_audio_follows_video
+#   - switch.main_display_rx_hdmi_output
