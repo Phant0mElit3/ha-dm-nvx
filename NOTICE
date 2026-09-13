@@ -1,0 +1,13 @@
+Crestron DM NVX for Home Assistant - Notices
+
+This project is an independent Home Assistant custom integration and is not
+affiliated with, endorsed by, sponsored by, or supported by Crestron
+Electronics, Inc.
+
+Crestron, DM NVX, and related names, marks, logos, and images are the property
+of Crestron Electronics, Inc. Any Crestron names are included only to identify
+compatibility with Crestron DM NVX systems and are not owned by this project.
+
+The MIT license in LICENSE applies to the original integration source code
+only. It does not grant rights to Crestron trademarks, logos, images, or other
+third-party assets.

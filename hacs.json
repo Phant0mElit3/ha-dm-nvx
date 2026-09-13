@@ -1,0 +1,8 @@
+{
+  "name": "Crestron DM NVX",
+  "content_in_root": false,
+  "filename": "crestron_nvx",
+  "render_readme": true,
+  "domains": ["binary_sensor", "sensor", "select", "event", "switch", "notify", "number", "camera"],
+  "homeassistant": "2023.8.0"
+}

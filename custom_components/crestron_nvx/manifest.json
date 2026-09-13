@@ -1,0 +1,10 @@
+{
+  "domain": "crestron_nvx",
+  "name": "Crestron DM NVX",
+  "documentation": "https://github.com/Phant0mElit3/ha-dm-nvx",
+  "requirements": ["aiohttp>=3.8.0"],
+  "codeowners": ["@Phant0mElit3"],
+  "config_flow": true,
+  "iot_class": "local_polling",
+  "version": "2.1.1"
+}

@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+"""Manual regression test for crestron_nvx_api.py against real hardware.
+
+Reads NVX_HOSTS / NVX_USERNAME / NVX_PASSWORD / NVX_VERIFY_SSL from .env in
+this directory. Exercises every read endpoint against each configured host,
+and (only if you pass --write/--cec/--osd) tests a real AvRouting source
+switch, the CEC long-poll listener, or the OSD write/clear cycle
+interactively.
+
+Usage:
+    python3 test_live.py               # read-only checks
+    python3 test_live.py --write       # also test a live route switch
+    python3 test_live.py --cec         # also test the CEC long-poll listener
+    python3 test_live.py --osd         # also test an OSD message write/clear
+    python3 test_live.py --testpattern # also test a live test pattern flash
+    python3 test_live.py --output      # also test an HDMI output disable/enable cycle
+    python3 test_live.py --preview     # also test fetching a preview JPEG
+    python3 test_live.py --reconnect   # also test recovery from an invalidated session
+"""
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+from pathlib import Path
+
+import aiohttp
+
+sys.path.insert(0, str(Path(__file__).parent / "custom_components" / "crestron_nvx"))
+
+from crestron_nvx_api import CrestronNVXAPI, decode_cec_message  # noqa: E402
+
+
+def load_env() -> dict[str, str]:
+    env_path = Path(__file__).parent / ".env"
+    env = {}
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        env[key.strip()] = value.strip()
+    return env
+
+
+async def check_device(api: CrestronNVXAPI, host: str, username: str, password: str) -> None:
+    print(f"\n=== {host} ===")
+    try:
+        device = await api.add_device(host=host, name=host, username=username, password=password)
+    except Exception as err:  # noqa: BLE001 - report and continue to next device
+        print(f"  LOGIN FAILED: {err}")
+        return
+
+    print(f"  mode: {device.device_mode}  hdmi_in={device.hdmi_inputs} hdmi_out={device.hdmi_outputs}")
+    print(f"  model={device.model} serial={device.serial_number} fw={device.firmware_version}")
+    print(f"  osd_supported={device.osd_supported} osd_display_seconds={device.osd_display_seconds}")
+    print(f"  test_patterns={device.test_patterns}")
+    print(f"  preview_supported={device.preview_supported}")
+    identify_active = await device.get_identify() if device.identify_supported else None
+    print(f"  identify_supported={device.identify_supported} active={identify_active}")
+
+    if device.hdmi_inputs > 0:
+        ds = await device.get_device_specific()
+        print(f"  VideoSource={ (ds or {}).get('VideoSource') } ActiveVideoSource={ (ds or {}).get('ActiveVideoSource') }")
+
+    video = await device.get_video_status()
+    print(f"  video: {video}")
+
+    eth = await device.get_ethernet_status()
+    print(f"  ethernet: {eth}")
+
+    if device.is_receiver:
+        streams = await device.get_discovered_streams()
+        print(f"  discovered streams: {[s.get('SessionName') for s in streams.values()]}")
+        route = await device.get_current_route()
+        print(f"  current route: {route}")
+        route_control = await device.get_route_control()
+        print(f"  route control: {route_control}")
+
+    if device.is_transmitter:
+        cec_raw = await device.get_cec_input_message()
+        print(f"  last CEC message: {cec_raw!r} -> {decode_cec_message(cec_raw)}")
+
+
+async def test_route_switch(api: CrestronNVXAPI) -> None:
+    receivers = [d for d in api.devices.values() if d.is_receiver]
+    if not receivers:
+        print("\nNo receivers configured, skipping write test.")
+        return
+
+    print("\nReceivers available for a live route-switch test:")
+    for i, dev in enumerate(receivers):
+        print(f"  [{i}] {dev.host}")
+    choice = input("Pick one to test (or blank to skip): ").strip()
+    if not choice:
+        return
+    device = receivers[int(choice)]
+
+    streams = await device.get_discovered_streams()
+    if not streams:
+        print("No discovered streams to switch to.")
+        return
+
+    original = await device.get_current_route()
+    print(f"Current route: {original}")
+
+    print("Available sources:")
+    items = list(streams.items())
+    for i, (uid, info) in enumerate(items):
+        print(f"  [{i}] {info.get('SessionName')} ({uid})")
+    idx = input("Switch to which source? (blank to skip): ").strip()
+    if not idx:
+        return
+    target_uid, target_info = items[int(idx)]
+
+    ok = await device.set_route(target_uid)
+    print(f"set_route({target_info.get('SessionName')}) -> {'OK' if ok else 'FAILED'}")
+
+    if original and input("Revert to original source? [Y/n]: ").strip().lower() != "n":
+        restore_uid = original.get("VideoSource")
+        if restore_uid:
+            ok = await device.set_route(restore_uid)
+            print(f"Reverted -> {'OK' if ok else 'FAILED'}")
+
+
+async def test_cec_listener(api: CrestronNVXAPI) -> None:
+    transmitters = [d for d in api.devices.values() if d.is_transmitter]
+    if not transmitters:
+        print("\nNo transmitters configured, skipping CEC test.")
+        return
+
+    print("\nTransmitters available for a live CEC long-poll test:")
+    for i, dev in enumerate(transmitters):
+        print(f"  [{i}] {dev.name} ({dev.host})")
+    choice = input("Pick one to test (or blank to skip): ").strip()
+    if not choice:
+        return
+    device = transmitters[int(choice)]
+
+    print(f"Long-polling {device.name} for 30s - press a button on its remote now...")
+    changed = await device.longpoll(timeout=30)
+    if not changed:
+        print("No change detected (timeout).")
+        return
+
+    try:
+        raw = changed["Device"]["AudioVideoInputOutput"]["Inputs"][0]["Ports"][0]["Hdmi"][
+            "ReceiveCecMessage"
+        ]
+    except (KeyError, TypeError, IndexError):
+        print(f"Changed, but not a CEC message: {changed}")
+        return
+
+    print(f"Raw CEC message: {raw!r} -> event: {decode_cec_message(raw)}")
+
+
+async def test_osd(api: CrestronNVXAPI) -> None:
+    receivers = [d for d in api.devices.values() if d.is_receiver and d.osd_supported]
+    if not receivers:
+        print("\nNo OSD-capable receivers configured, skipping OSD test.")
+        return
+
+    print("\nOSD-capable receivers:")
+    for i, dev in enumerate(receivers):
+        print(f"  [{i}] {dev.name} ({dev.host})")
+    choice = input("Pick one to test (or blank to skip): ").strip()
+    if not choice:
+        return
+    device = receivers[int(choice)]
+
+    message = input("Message to show (blank for 'test_live.py'): ").strip() or "test_live.py"
+    ok = await device.set_osd(text=message, enabled=True)
+    print(f"set_osd(enabled=True) -> {'OK' if ok else 'FAILED'}")
+
+    seconds = device.osd_display_seconds
+    print(f"Waiting {seconds}s (device.osd_display_seconds) before clearing...")
+    await asyncio.sleep(seconds)
+
+    ok = await device.set_osd(enabled=False)
+    print(f"set_osd(enabled=False) -> {'OK' if ok else 'FAILED'}")
+
+
+async def test_pattern(api: CrestronNVXAPI) -> None:
+    transmitters = [d for d in api.devices.values() if d.test_patterns]
+    if not transmitters:
+        print("\nNo test-pattern-capable devices configured, skipping.")
+        return
+
+    print("\nTest-pattern-capable devices:")
+    for i, dev in enumerate(transmitters):
+        print(f"  [{i}] {dev.name} ({dev.host}) - {dev.test_patterns}")
+    choice = input("Pick one to test (or blank to skip): ").strip()
+    if not choice:
+        return
+    device = transmitters[int(choice)]
+
+    pattern = "SMPTE ColorBars" if "SMPTE ColorBars" in device.test_patterns else device.test_patterns[0]
+    ok = await device.set_test_pattern(pattern)
+    print(f"set_test_pattern({pattern!r}) -> {'OK' if ok else 'FAILED'}, now={await device.get_test_pattern()!r}")
+
+    input("Press enter to restore Off...")
+    ok = await device.set_test_pattern("Off")
+    print(f"set_test_pattern('Off') -> {'OK' if ok else 'FAILED'}, now={await device.get_test_pattern()!r}")
+
+
+async def test_output_disable(api: CrestronNVXAPI) -> None:
+    receivers = [d for d in api.devices.values() if d.is_receiver]
+    if not receivers:
+        print("\nNo receivers configured, skipping output-disable test.")
+        return
+
+    print("\nReceivers available for an HDMI output disable/enable cycle:")
+    for i, dev in enumerate(receivers):
+        print(f"  [{i}] {dev.name} ({dev.host})")
+    choice = input("Pick one to test (or blank to skip): ").strip()
+    if not choice:
+        return
+    device = receivers[int(choice)]
+
+    ok = await device.set_output_disabled(True)
+    print(f"set_output_disabled(True) -> {'OK' if ok else 'FAILED'}")
+    print("Note: takes a couple of seconds to actually propagate (same lag as Osd).")
+    await asyncio.sleep(3)
+    video = await device.get_video_status()
+    print(f"video status after disable: {video}")
+
+    input("Press enter to re-enable...")
+    ok = await device.set_output_disabled(False)
+    print(f"set_output_disabled(False) -> {'OK' if ok else 'FAILED'}")
+    await asyncio.sleep(3)
+    video = await device.get_video_status()
+    print(f"video status after re-enable: {video}")
+
+
+async def test_preview(api: CrestronNVXAPI) -> None:
+    supported = [d for d in api.devices.values() if d.preview_supported]
+    if not supported:
+        print("\nNo preview-capable devices configured, skipping.")
+        return
+
+    for device in supported:
+        image = await device.get_preview_image()
+        size = len(image) if image else 0
+        print(f"  {device.name} ({device.host}): {'OK, ' + str(size) + ' bytes' if image else 'FAILED'}")
+
+
+async def test_reconnect(api: CrestronNVXAPI) -> None:
+    """Verify recovery after the server-side session is invalidated.
+
+    Logs a device out server-side (without touching this client's cookies,
+    same as what a device reboot or an idle session timeout would look
+    like), then confirms a normal read still works afterwards - i.e. the
+    stale-session-redirect is detected and the client re-authenticates
+    automatically instead of failing forever.
+    """
+    if not api.devices:
+        print("\nNo devices configured, skipping reconnect test.")
+        return
+
+    devices = list(api.devices.values())
+    print("\nDevices available for a reconnect test:")
+    for i, dev in enumerate(devices):
+        print(f"  [{i}] {dev.name} ({dev.host})")
+    choice = input("Pick one to test (or blank to skip): ").strip()
+    if not choice:
+        return
+    device = devices[int(choice)]
+
+    print("Invalidating session server-side (GET /logout) without clearing local cookies...")
+    await device._session.get(  # noqa: SLF001 - deliberately reaching in for this test
+        f"https://{device.host}/logout", ssl=device._ssl, timeout=aiohttp.ClientTimeout(total=10)
+    )
+
+    print("Issuing a normal read with the now-stale cookies...")
+    info = await device.get_device_info()
+    print(f"get_device_info() -> {'OK: ' + str(info) if info else 'FAILED - did not reconnect'}")
+
+
+async def main() -> None:
+    env = load_env()
+    hosts = [h.strip() for h in env.get("NVX_HOSTS", "").split(",") if h.strip()]
+    username = env.get("NVX_USERNAME", "")
+    password = env.get("NVX_PASSWORD", "")
+    verify_ssl = env.get("NVX_VERIFY_SSL", "false").lower() == "true"
+
+    if not hosts:
+        print("NVX_HOSTS is empty in .env - nothing to test.")
+        return
+
+    api = CrestronNVXAPI(verify_ssl=verify_ssl)
+    try:
+        for host in hosts:
+            await check_device(api, host, username, password)
+
+        if "--write" in sys.argv:
+            await test_route_switch(api)
+
+        if "--cec" in sys.argv:
+            await test_cec_listener(api)
+
+        if "--osd" in sys.argv:
+            await test_osd(api)
+
+        if "--testpattern" in sys.argv:
+            await test_pattern(api)
+
+        if "--output" in sys.argv:
+            await test_output_disable(api)
+
+        if "--preview" in sys.argv:
+            await test_preview(api)
+
+        if "--reconnect" in sys.argv:
+            await test_reconnect(api)
+    finally:
+        await api.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

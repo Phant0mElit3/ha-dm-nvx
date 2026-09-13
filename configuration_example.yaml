@@ -1,0 +1,93 @@
+# Crestron NVX Integration - Example Automations & Dashboard
+#
+# There is no YAML device configuration for this integration - devices are
+# set up entirely through Settings -> Devices & Services -> Add Integration.
+# Everything below assumes devices are already configured that way; replace
+# the entity_ids with your own (they're named after the "Device Name" you
+# gave each device during setup).
+
+automation:
+  # React to a real CEC remote press from a source device (e.g. an Apple TV
+  # with Volume Control set to HDMI-CEC). The easiest way to build this is
+  # via the UI: Settings -> Automations -> Add -> choose a Device trigger on
+  # the "CEC Command" entity, which lists power_on/power_off/volume_up/
+  # volume_down/mute directly. The equivalent in YAML:
+  - alias: "Apple TV volume up -> living room speaker"
+    trigger:
+      - platform: event
+        event_type: event.crestron_nvx_atv_encoder_cec_command
+    condition:
+      - condition: template
+        value_template: "{{ trigger.event.data.event_type == 'volume_up' }}"
+    action:
+      - service: media_player.volume_up
+        target:
+          entity_id: media_player.living_room_speaker
+
+  - alias: "Apple TV mute -> living room speaker"
+    trigger:
+      - platform: event
+        event_type: event.crestron_nvx_atv_encoder_cec_command
+    condition:
+      - condition: template
+        value_template: "{{ trigger.event.data.event_type == 'mute' }}"
+    action:
+      - service: media_player.volume_mute
+        target:
+          entity_id: media_player.living_room_speaker
+        data:
+          is_volume_muted: true
+
+  # Switch a receiver's source when a meeting starts, via the calendar
+  - alias: "Meeting Room - Switch to Laptop"
+    trigger:
+      - platform: calendar
+        event: start
+        entity_id: calendar.meeting_room
+    action:
+      - service: select.select_option
+        target:
+          entity_id: select.main_display_rx_stream_source
+        data:
+          option: "Laptop TX"
+
+  # Alert when a display loses signal
+  - alias: "Alert on Signal Loss"
+    trigger:
+      - platform: state
+        entity_id: sensor.main_display_rx_sink_connected
+        to: "disconnected"
+        for: "00:01:00"
+    action:
+      - service: notify.mobile_app
+        data:
+          title: "AV Alert"
+          message: "Main Display has lost its downstream connection"
+
+script:
+  # Switch several receivers to the same source at once
+  switch_all_displays_to_camera:
+    alias: "Switch All Displays to Camera"
+    icon: mdi:video
+    sequence:
+      - service: select.select_option
+        target:
+          entity_id:
+            - select.main_display_rx_stream_source
+            - select.projector_rx_stream_source
+        data:
+          option: "Camera TX"
+
+# Example Lovelace dashboard
+#
+# type: entities
+# title: Conference Room AV
+# entities:
+#   - entity: sensor.main_display_rx_resolution
+#     name: Resolution
+#   - entity: sensor.main_display_rx_sink_connected
+#     name: Display Connected
+#   - entity: sensor.main_display_rx_hdcp_state
+#     name: HDCP
+#   - entity: select.main_display_rx_stream_source
+#     name: Video Source

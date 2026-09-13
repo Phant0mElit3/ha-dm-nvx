@@ -1,0 +1,36 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Configure Crestron DM NVX Device",
+        "description": "Add a Crestron DM NVX transmitter or receiver. Role (transmitter/receiver) is detected automatically from the device.",
+        "data": {
+          "name": "Device Name",
+          "host": "IP Address or Hostname",
+          "username": "Username",
+          "password": "Password",
+          "verify_ssl": "Verify SSL Certificate",
+          "scan_interval": "Update Interval (seconds)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the device. Please check the IP address and network connection.",
+      "invalid_auth": "Invalid username or password. Please check your credentials.",
+      "unknown": "An unexpected error occurred. Please try again."
+    },
+    "abort": {
+      "already_configured": "This device is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Crestron DM NVX Options",
+        "data": {
+          "enable_preview_camera": "Enable preview camera (fetches a live JPEG snapshot from each device)"
+        }
+      }
+    }
+  }
+}
