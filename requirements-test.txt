@@ -4,4 +4,4 @@ ruff>=0.9,<1
 numpy>=1.26
 av>=13
 ha-ffmpeg>=3.2
-
+PyTurboJPEG==1.8.3

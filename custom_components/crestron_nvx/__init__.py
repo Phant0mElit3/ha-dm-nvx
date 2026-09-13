@@ -66,7 +66,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinators: dict[str, CrestronNVXDataUpdateCoordinator] = {}
         for device_name, device in api.devices.items():
             coordinator = CrestronNVXDataUpdateCoordinator(
-                hass, device=device, update_interval=timedelta(seconds=scan_interval)
+                hass, device=device, update_interval=timedelta(seconds=scan_interval), entry=entry
             )
             await coordinator.async_config_entry_first_refresh()
             coordinators[device_name] = coordinator
@@ -124,12 +124,20 @@ class CrestronNVXDataUpdateCoordinator(DataUpdateCoordinator):
     """Fetches video/ethernet/route status for a single NVX device."""
 
     def __init__(
-        self, hass: HomeAssistant, device: CrestronNVXDevice, update_interval: timedelta
+        self,
+        hass: HomeAssistant,
+        device: CrestronNVXDevice,
+        update_interval: timedelta,
+        entry: ConfigEntry | None = None,
     ) -> None:
         """Initialize the coordinator."""
         self.device = device
         super().__init__(
-            hass, _LOGGER, name=f"Crestron NVX {device.host}", update_interval=update_interval
+            hass,
+            _LOGGER,
+            name=f"Crestron NVX {device.host}",
+            update_interval=update_interval,
+            config_entry=entry,
         )
 
     async def _async_update_data(self) -> dict:
