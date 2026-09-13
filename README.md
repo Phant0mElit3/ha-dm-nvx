@@ -114,8 +114,9 @@ responses, not assumed from the product name.
 The 2.2.1 video-routing issue was reproduced on a D30 with firmware
 7.1.5259.00090: its requested 363C source did not become a received stream.
 Setting the primary RTSP location through the decoder web UI restored video,
-as confirmed by the user. The updated integration is tested with mocked device
-responses; end-to-end HA testing after installation is still needed.
+as confirmed by the user. Following installation, the user also confirmed that
+video switching through Home Assistant now works. Automated tests cover the
+route/readback behavior with simulated device responses.
 CI tests the minimum supported Home Assistant release and the latest release.
 The earlier advertised 2023.8 minimum was incorrect for APIs already in use.
 
