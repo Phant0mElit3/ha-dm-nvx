@@ -22,6 +22,7 @@ TO_REDACT = {
     "entity_id_prefix",
     "ip_address",
     "mac_address",
+    "StreamLocation",
 }
 
 
@@ -57,7 +58,8 @@ async def async_get_config_entry_diagnostics(
                     "status": {
                         key: value
                         for key, value in (coordinator_data or {}).items()
-                        if key in ("video", "ethernet", "identify", "test_pattern")
+                        if key
+                        in ("video", "ethernet", "identify", "test_pattern", "primary_stream")
                     },
                 }
             )

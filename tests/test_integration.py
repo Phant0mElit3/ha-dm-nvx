@@ -129,7 +129,42 @@ async def test_rejected_command_raises(device, coordinator):
     device.set_route_off = AsyncMock(return_value=False)
     with pytest.raises(HomeAssistantError):
         await CrestronNVXStreamSelect(coordinator, device).async_select_option("Off")
-    coordinator.async_request_refresh.assert_not_called()
+    coordinator.async_request_refresh.assert_awaited_once()
+
+
+def test_video_selection_uses_receive_location_not_requested_route(device, coordinator):
+    coordinator.data = {
+        "route": {"VideoSource": "new", "AudioSource": "new"},
+        "discovered_streams": {
+            "old": {"SessionName": "351C", "RtspUri": "rtsp://192.0.2.1/live.sdp"},
+            "new": {"SessionName": "363C", "RtspUri": "rtsp://192.0.2.2/live.sdp"},
+        },
+        "primary_stream": {
+            "StreamLocation": "rtsp://192.0.2.1/live.sdp",
+            "Processing": False,
+            "Status": "Stream started",
+        },
+    }
+    video = CrestronNVXStreamSelect(coordinator, device)
+    assert video.current_option == "351C"
+    assert CrestronNVXAudioSourceSelect(coordinator, device).current_option == "363C"
+    coordinator.data["primary_stream"]["Processing"] = True
+    assert video.current_option is None
+    coordinator.data["primary_stream"]["Processing"] = False
+    coordinator.data["primary_stream"]["StreamLocation"] = "rtsp://192.0.2.2/live.sdp"
+    assert video.current_option == "363C"
+    coordinator.data["primary_stream"]["Status"] = "Stream stopped"
+    assert video.current_option is None
+
+
+@pytest.mark.parametrize("location", [None, "rtsp://192.0.2.99/live.sdp"])
+def test_unknown_receive_location_does_not_claim_requested_source(device, coordinator, location):
+    coordinator.data = {
+        "route": {"VideoSource": "new"},
+        "discovered_streams": {"new": {"SessionName": "363C"}},
+        "primary_stream": {"StreamLocation": location},
+    }
+    assert CrestronNVXStreamSelect(coordinator, device).current_option is None
 
 
 def test_host_change_preserves_entity_and_device_identity(device, coordinator):
@@ -216,6 +251,12 @@ async def test_unload_keeps_session_if_platform_refuses(hass):
 
 
 async def test_diagnostics_redact_identity_and_credentials(hass, device, coordinator):
+    coordinator.data = {
+        "primary_stream": {
+            "StreamLocation": "rtsp://private-user:private-pass@192.0.2.99/live.sdp",
+            "Status": "Stream started",
+        }
+    }
     entry = MagicMock(entry_id="entry")
     entry.as_dict.return_value = {
         "data": {"devices": [{"host": device.host, "password": "secret", "username": "admin"}]}
@@ -227,8 +268,18 @@ async def test_diagnostics_redact_identity_and_credentials(hass, device, coordin
         }
     }
     result = str(await async_get_config_entry_diagnostics(hass, entry))
-    for sensitive in ("secret", "admin", device.host, "SERIAL123", "Display"):
+    for sensitive in (
+        "secret",
+        "admin",
+        device.host,
+        "SERIAL123",
+        "Display",
+        "private-user",
+        "private-pass",
+        "192.0.2.99",
+    ):
         assert sensitive not in result
+    assert "Stream started" in result
 
 
 async def test_duplicate_config_aborts_instead_of_unknown_error(hass):

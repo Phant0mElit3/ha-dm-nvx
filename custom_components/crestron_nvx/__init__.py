@@ -158,6 +158,7 @@ class CrestronNVXDataUpdateCoordinator(DataUpdateCoordinator):
             if self.device.is_receiver:
                 data["discovered_streams"] = await self.device.get_discovered_streams()
                 data["route"] = await self.device.get_current_route()
+                data["primary_stream"] = await self.device.get_primary_stream()
                 data["route_control"] = await self.device.get_route_control()
             return data
         except CrestronNVXAuthError as err:

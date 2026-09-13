@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.2.1
+
+- Reconcile video source changes with primary stream reception. When AvRouting
+  accepts a source without updating reception, set its discovered RTSP URL on
+  the primary StreamReceive slot and verify that the stream starts.
+- Wait for stream processing to finish, serialize video changes, and bound
+  source commands to 15 seconds once running. Surface failed confirmation to HA.
+- Derive the video dropdown from receive location/status when supported, not
+  just the requested route. Refresh after partially failed video commands.
+- Preserve independent AES67 audio/USB routes and existing follow settings.
+  Manual stream initiation is started explicitly without changing its mode.
+  The existing full-route Off behavior is unchanged.
+- Include receive status in diagnostics while redacting the stream URL.
+- Reproduced an accepted route with no active reception on a DM-NVX-D30 running
+  7.1.5259.00090; the user confirmed that setting the 363C RTSP location in the
+  decoder web UI restores the picture. The updated integration is regression
+  tested with mocked I/O; end-to-end HA installation testing remains necessary.
+
 ## 2.2.0
 
 - Fix recursive login attempts, handle HTTP 401, and serialize concurrent

@@ -12,6 +12,7 @@ import asyncio
 import base64
 import logging
 from typing import Optional
+from urllib.parse import urlsplit
 
 import aiohttp
 
@@ -23,6 +24,7 @@ LONGPOLL_PATH = "/Device/Longpoll"
 
 DEVICE_MODE_TRANSMITTER = "Transmitter"
 DEVICE_MODE_RECEIVER = "Receiver"
+VIDEO_ROUTE_TIMEOUT = 15
 
 # CEC opcodes/operands relevant to the "listen for Apple TV remote presses"
 # use case. Confirmed live: a real Volume Up press decoded to bytes
@@ -126,6 +128,7 @@ class CrestronNVXDevice:
         self._authenticated = False
         self._auth_lock = asyncio.Lock()
         self._auth_generation = 0
+        self._video_route_lock = asyncio.Lock()
 
     @property
     def is_receiver(self) -> bool:
@@ -418,18 +421,64 @@ class CrestronNVXDevice:
         except (KeyError, TypeError, IndexError):
             return None
 
-    async def set_route(self, source_uid: str) -> bool:
-        """Switch video to the given DiscoveredStreams UID.
+    async def get_primary_stream(self) -> Optional[dict]:
+        """Read primary receive state, excluding stream authentication fields."""
+        data = await self._request("StreamReceive/Streams/0")
+        if data is None:
+            return None
+        try:
+            stream = data["Device"]["StreamReceive"]["Streams"][0]
+        except (KeyError, TypeError, IndexError) as err:
+            raise CrestronNVXConnectionError("Missing primary stream readback") from err
+        if not isinstance(stream, dict) or not all(
+            isinstance(stream.get(key), value_type)
+            for key, value_type in (("StreamLocation", str), ("Processing", bool), ("Status", str))
+        ):
+            raise CrestronNVXConnectionError("Invalid primary stream readback")
+        return {
+            key: stream[key]
+            for key in (
+                "StreamLocation",
+                "Status",
+                "Processing",
+                "CodecReady",
+                "IsAutomaticInitiationEnabled",
+            )
+            if key in stream
+        }
 
-        Deliberately writes VideoSource only. Audio/USB following is the
-        device's own job (AvRouting/RouteControl's
-        IsSecondaryAudioFollowsVideoEnabled / IsUsbFollowsVideoEnabled) -
-        confirmed live that with the audio flag on, writing VideoSource
-        alone is enough for AudioSource to update on its own. Explicitly
-        writing AudioSource here as well - which is what earlier versions
-        of this method did - would fight anyone who's turned audio-follow
-        off to route audio independently via set_audio_source().
-        """
+    async def set_route(self, source_uid: str) -> bool:
+        """Route video and reconcile primary reception, preserving breakaway settings."""
+        async with self._video_route_lock:
+            try:
+                async with asyncio.timeout(VIDEO_ROUTE_TIMEOUT):
+                    return await self._set_verified_video_route(source_uid)
+            except TimeoutError as err:
+                raise CrestronNVXError("Timed out waiting for the NVX video route") from err
+
+    async def _wait_primary_idle(self) -> Optional[dict]:
+        """Do not send stream commands while the receiver is changing state."""
+        for _ in range(20):
+            stream = await self.get_primary_stream()
+            if stream is None or stream.get("Processing") is False:
+                return stream
+            await asyncio.sleep(0.25)
+        raise CrestronNVXError("The NVX receiver is still processing a stream change")
+
+    async def _set_verified_video_route(self, source_uid: str) -> bool:
+        stream = await self._wait_primary_idle()
+        location = None
+        if stream is not None:
+            sources = await self.get_discovered_streams()
+            source = sources.get(source_uid) or {}
+            location = source.get("RtspUri") if isinstance(source, dict) else None
+            try:
+                uri = urlsplit(location) if isinstance(location, str) else None
+                valid = uri is not None and uri.scheme in ("rtsp", "rtsps") and bool(uri.hostname)
+            except ValueError:
+                valid = False
+            if not valid:
+                raise CrestronNVXError("The selected NVX source has no valid discovered RTSP URL")
         body = {
             "Device": {
                 "AvRouting": {
@@ -441,9 +490,48 @@ class CrestronNVXDevice:
                 }
             }
         }
-        return self._post_ok(
+        if not self._post_ok(
             await self._request("AvRouting/Routes/0", method="POST", json_body=body)
-        )
+        ):
+            return False
+        if stream is None:
+            # Older firmware may omit StreamReceive; retain its routing path.
+            route = await self.get_current_route()
+            return bool(route and route.get("VideoSource") == source_uid)
+
+        await asyncio.sleep(0.25)
+        stream = await self._wait_primary_idle()
+        if stream is None:
+            raise CrestronNVXError("The NVX receiver did not return stream readback")
+        if stream.get("StreamLocation") != location:
+            # Some receivers acknowledge AvRouting without updating reception.
+            # Only the primary RTSP subscription is changed, never AES67/USB.
+            body = {"Device": {"StreamReceive": {"Streams": [{"StreamLocation": location}]}}}
+            if not self._post_ok(
+                await self._request("StreamReceive/Streams/0", method="POST", json_body=body)
+            ):
+                return False
+        start_requested = False
+        for _ in range(20):
+            stream = await self.get_primary_stream()
+            if (
+                stream
+                and stream.get("Processing") is False
+                and stream.get("StreamLocation") == location
+            ):
+                if str(stream.get("Status", "")).casefold() == "stream started":
+                    return True
+                if stream.get("IsAutomaticInitiationEnabled") is False and not start_requested:
+                    body = {"Device": {"StreamReceive": {"Streams": [{"Start": True}]}}}
+                    if not self._post_ok(
+                        await self._request(
+                            "StreamReceive/Streams/0", method="POST", json_body=body
+                        )
+                    ):
+                        return False
+                    start_requested = True
+            await asyncio.sleep(0.25)
+        raise CrestronNVXError("The NVX receiver did not start the selected video stream")
 
     async def set_route_off(self) -> bool:
         """Clear video, audio and USB together - confirmed live to blank the output cleanly.
@@ -458,9 +546,10 @@ class CrestronNVXDevice:
                 "AvRouting": {"Routes": [{"VideoSource": "", "AudioSource": "", "UsbSource": ""}]}
             }
         }
-        return self._post_ok(
-            await self._request("AvRouting/Routes/0", method="POST", json_body=body)
-        )
+        async with self._video_route_lock:
+            return self._post_ok(
+                await self._request("AvRouting/Routes/0", method="POST", json_body=body)
+            )
 
     async def get_route_control(self) -> Optional[dict]:
         """AvRouting-wide flags, notably IsSecondaryAudioFollowsVideoEnabled."""

@@ -57,12 +57,18 @@ does not mean it is listed in the default HACS catalog.
 | Identify LED flashing | Devices exposing Identify |
 | Redacted diagnostics | Each configured device |
 
-A video source change writes only `VideoSource`. Audio and USB follow according
-to the device's own follow settings. Selecting video **Off** clears video,
-audio and USB together. Audio **Off** clears only audio.
+A video source change writes `VideoSource`, then checks primary reception.
+If the receiver accepts the route without changing streams, the integration
+sets the discovered RTSP URL on its primary receive slot and checks that it
+starts. This fallback does not write AES67 audio/USB routes or follow settings.
+Selecting video **Off** clears video, audio and USB together. Audio **Off**
+clears only audio.
 
-Duplicate stream names are disambiguated with their IDs. An undiscovered
-current route appears as `Unknown (<ID>)` until its source is discovered.
+Duplicate stream names are disambiguated with their IDs. The video dropdown
+uses receive location/status when available; a pending, stopped, or unmapped
+nonempty stream is unknown rather than falsely showing the requested source.
+On firmware without receive readback, the configured route is used instead.
+An undiscovered configured route remains an `Unknown (<ID>)` option.
 
 ## Configuration and Recovery
 
@@ -79,6 +85,9 @@ original address before an address change can be verified.
 Expired sessions renew automatically. An unreachable device becomes
 unavailable and retries; rejected credentials prompt for reauthentication.
 Commands report rejected writes to Home Assistant and refresh device state.
+Video source changes use short settle polls and a 15-second command deadline;
+they do not wait for the regular polling interval. Failure to confirm a started
+stream is reported as a command error, not a successful selection.
 Some firmware applies HDMI output/OSD changes after a short delay; the next
 poll confirms the actual state.
 
@@ -102,8 +111,11 @@ DM-NVX-350 and DM-NVX-D30**, firmware **7.1.5259.00090**. Other models and
 firmware may expose different properties. Optional controls are detected from
 responses, not assumed from the product name.
 
-The 2.2.0 maintenance changes are covered by automated tests with mocked
-device responses; they have not yet been revalidated on physical NVX hardware.
+The 2.2.1 video-routing issue was reproduced on a D30 with firmware
+7.1.5259.00090: its requested 363C source did not become a received stream.
+Setting the primary RTSP location through the decoder web UI restored video,
+as confirmed by the user. The updated integration is tested with mocked device
+responses; end-to-end HA testing after installation is still needed.
 CI tests the minimum supported Home Assistant release and the latest release.
 The earlier advertised 2023.8 minimum was incorrect for APIs already in use.
 

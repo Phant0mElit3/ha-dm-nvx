@@ -154,10 +154,9 @@ Network-wide map of every stream currently visible, keyed by `UniqueId`:
 `{"<uuid>": {"SessionName": "...", "MulticastAddress": "...", "Resolution": "...", ...}}`.
 `SessionName` matches the source transmitter's configured `Name`.
 
-### `AvRouting/Routes/0` (GET, POST) - **the real source-switching mechanism**
+### `AvRouting/Routes/0` and primary `StreamReceive` (GET, POST)
 
-This is the important one, and it was not obvious from the docs alone -
-confirmed by live testing on real hardware:
+Earlier hardware observations (not a guarantee across all configurations):
 
 - `POST .../StreamReceive/Streams/0/MulticastAddress` alone returns success
   but **does nothing** - the RTSP session never renegotiates.
@@ -167,12 +166,38 @@ confirmed by live testing on real hardware:
   it's a separate stream subscription StreamReceive doesn't touch.
 - `POST AvRouting/Routes/0` with `VideoSource`, `AudioSource`, and/or
   `UsbSource` set to a `DiscoveredStreams` `UniqueId` **switches sources
-  correctly** - confirmed across multiple live source changes with visual +
-  audio confirmation. **Use this, not StreamReceive directly.**
+  correctly** in the earlier tests, with visual and audio confirmation.
+  Later D30 testing showed that an accepted route is not sufficient evidence
+  of actual reception; see the 2.2.1 behavior below.
 - Every write response here comes back `"Operation": "SetPartial"`, and
   it's true to its name: POSTing only one of the three fields (e.g. just
   `AudioSource`) leaves the other two untouched - confirmed live. This is
   how the integration implements independent audio routing.
+
+**2.2.1 correction:** On a DM-NVX-D30 running 7.1.5259.00090, selecting a
+DM-NVX-363C in HA updated `AvRouting.VideoSource` but left primary
+`StreamReceive.StreamLocation` empty and the stream stopped. The user confirmed
+that entering that encoder's RTSP URL in the decoder's Stream Location field
+brought up the picture. This was not a normal polling delay. No conclusion is
+drawn from unrelated historical unavailable events.
+
+The integration now sends the UUID route first, waits for `Processing` to be
+false, and checks primary reception. If its location differs, it writes only
+`StreamReceive/Streams/0.StreamLocation` with the discovered `RtspUri`. It
+checks location, processing, and `Status` (case-insensitive `Stream started`)
+before reporting success. A manually initiated stream receives `Start: true`
+when needed, without changing its initiation mode. The source command has a
+15-second deadline after acquiring the per-device video lock.
+
+AES67 audio routes, USB routes, and automatic-routing/follow flags are not
+rewritten by this fallback. The video selector reflects receive state where
+supported; firmware returning 404 for StreamReceive retains configured-route
+feedback. Readback confirms the receiver-reported session, not the physical
+display's picture. The web-UI workaround was hardware-confirmed; the integration
+implementation still needs end-to-end verification after installation.
+
+Official references: [AvRouting](https://sdkcon78221.crestron.com/sdk/DM_NVX_REST_API/Content/Topics/Objects/AvRouting.htm)
+and [StreamReceive](https://sdkcon78221.crestron.com/sdk/DM_NVX_REST_API/Content/Topics/Objects/StreamReceive.htm).
 
 ```json
 POST /Device/AvRouting/Routes/0

@@ -7,7 +7,7 @@ from collections import Counter
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -66,17 +66,7 @@ async def async_setup_entry(
 
 
 class CrestronNVXStreamSelect(CoordinatorEntity, SelectEntity):
-    """Select entity for switching a receiver's source via AvRouting.
-
-    Switches video; audio and USB follow according to device settings - writing StreamReceive's MulticastAddress/StreamLocation
-    directly either has no effect or leaves audio on the old source, since
-    this fleet's audio is a separate breakaway subscription that only the
-    AvRouting object keeps in sync with video.
-
-    Also offers an "Off" option, which clears VideoSource/AudioSource/
-    UsbSource to empty strings - confirmed live to blank the output cleanly
-    (no video/audio routed) rather than erroring or leaving the last frame.
-    """
+    """Route primary video with receive readback; Off clears video/audio/USB."""
 
     def __init__(self, coordinator, device):
         """Initialize the select entity."""
@@ -100,6 +90,27 @@ class CrestronNVXStreamSelect(CoordinatorEntity, SelectEntity):
 
     @property
     def current_option(self) -> str | None:
+        data = self.coordinator.data or {}
+        stream = data.get("primary_stream")
+        if self._route_key == "VideoSource" and stream is not None:
+            location = stream.get("StreamLocation")
+            if stream.get("Processing") or not isinstance(location, str):
+                return None
+            if not location:
+                return OFF_OPTION
+            if str(stream.get("Status", "")).casefold() != "stream started":
+                return None
+            matches = {
+                uid
+                for uid, info in (data.get("discovered_streams") or {}).items()
+                if isinstance(info, dict) and info.get("RtspUri") == location
+            }
+            if len(matches) != 1:
+                return None
+            uid = matches.pop()
+            return next(
+                (label for label, source in self._source_options().items() if source == uid), None
+            )
         route = (self.coordinator.data or {}).get("route")
         if not route or self._route_key not in route:
             return None
@@ -113,9 +124,14 @@ class CrestronNVXStreamSelect(CoordinatorEntity, SelectEntity):
         if option not in sources:
             raise ServiceValidationError("The selected NVX source is no longer available")
         uid = sources[option]
-        await async_run_command(
-            self.coordinator, self.device.set_route(uid) if uid else self.device.set_route_off()
-        )
+        try:
+            await async_run_command(
+                self.coordinator, self.device.set_route(uid) if uid else self.device.set_route_off()
+            )
+        except HomeAssistantError:
+            # A partially applied command must still reconcile with the receiver.
+            await self.coordinator.async_request_refresh()
+            raise
 
 
 class CrestronNVXAudioSourceSelect(CrestronNVXStreamSelect):
