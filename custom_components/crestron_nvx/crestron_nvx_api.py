@@ -16,6 +16,15 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from .aes67 import (
+    AUDIO_OUTPUT_MODES,
+    compatible_stream,
+    single_receiver,
+    stream_endpoint,
+    stream_started,
+    valid_key,
+)
+
 _LOGGER = logging.getLogger(__name__)
 
 LOGIN_PATH = "/userlogin.html"
@@ -25,6 +34,7 @@ LONGPOLL_PATH = "/Device/Longpoll"
 DEVICE_MODE_TRANSMITTER = "Transmitter"
 DEVICE_MODE_RECEIVER = "Receiver"
 VIDEO_ROUTE_TIMEOUT = 15
+AUDIO_ROUTE_TIMEOUT = 15
 
 # CEC opcodes/operands relevant to the "listen for Apple TV remote presses"
 # use case. Confirmed live: a real Volume Up press decoded to bytes
@@ -129,6 +139,7 @@ class CrestronNVXDevice:
         self._auth_lock = asyncio.Lock()
         self._auth_generation = 0
         self._video_route_lock = asyncio.Lock()
+        self._audio_route_lock = asyncio.Lock()
 
     @property
     def is_receiver(self) -> bool:
@@ -534,12 +545,11 @@ class CrestronNVXDevice:
         raise CrestronNVXError("The NVX receiver did not start the selected video stream")
 
     async def set_route_off(self) -> bool:
-        """Clear video, audio and USB together - confirmed live to blank the output cleanly.
+        """Clear the NVX video/audio/USB UID routes together.
 
         Unlike set_route(), this always clears all three regardless of the
         audio-follows-video setting: "Off" is a deliberate full blank, not a
-        source switch, so lingering independent audio on the old source
-        would be surprising.
+        source switch. Direct NaxRx audio is separate and has its own Off control.
         """
         body = {
             "Device": {
@@ -560,6 +570,11 @@ class CrestronNVXDevice:
             return None
 
     async def set_audio_follows_video(self, enabled: bool) -> bool:
+        """Serialize follow changes with independent audio commands."""
+        async with self._audio_route_lock:
+            return await self._set_audio_follows_video(enabled)
+
+    async def _set_audio_follows_video(self, enabled: bool) -> bool:
         """Toggle whether AudioSource auto-tracks VideoSource on future switches.
 
         When turning this on, also immediately syncs AudioSource to the
@@ -579,21 +594,142 @@ class CrestronNVXDevice:
             route = await self.get_current_route()
             video_uid = (route or {}).get("VideoSource")
             if video_uid is not None:
-                ok = await self.set_audio_source(video_uid)
+                ok = await self._set_audio_source(video_uid)
         return ok
 
     async def set_audio_source(self, source_uid: str) -> bool:
         """Route audio only to the given DiscoveredStreams UID, independent of video."""
+        async with self._audio_route_lock:
+            return await self._set_audio_source(source_uid)
+
+    async def _set_audio_source(self, source_uid: str) -> bool:
         body = {"Device": {"AvRouting": {"Routes": [{"AudioSource": source_uid}]}}}
         return self._post_ok(
             await self._request("AvRouting/Routes/0", method="POST", json_body=body)
         )
 
+    async def _get_nax_streams(self, section: str, collection: str) -> dict:
+        data = await self._request(f"NaxAudio/{section}")
+        try:
+            status = data["Device"]["NaxAudio"][section]
+            streams = status[collection]
+        except (KeyError, TypeError):
+            return {}
+        if not isinstance(streams, dict):
+            return {}
+        if section == "NaxRx" and status.get("MaxStreams", 1) != 1:
+            return {}
+        return {
+            key: stream
+            for key, stream in streams.items()
+            if valid_key(key) and isinstance(stream, dict)
+        }
+
+    async def get_aes67_receivers(self) -> dict:
+        """Read optional receive slots; unsupported firmware has no controls."""
+        return await self._get_nax_streams("NaxRx", "NaxRxStreams")
+
+    async def get_aes67_streams(self) -> dict:
+        """Read the decoder's SAP/SDP discovery, without contacting the NAX."""
+        return await self._get_nax_streams("NaxSdp", "NaxSdpStreams")
+
+    async def _require_independent_audio(self) -> None:
+        control = await self.get_route_control()
+        if (control or {}).get("IsSecondaryAudioFollowsVideoEnabled") is not False:
+            raise CrestronNVXError("Disable Audio Follows Video before routing AES67 audio")
+
+    async def set_aes67_stream(self, receiver_id: str, discovery_id: str | None) -> bool:
+        """Change only one AES67 receiver and verify actual reception, not the request."""
+        async with self._audio_route_lock:
+            try:
+                async with asyncio.timeout(AUDIO_ROUTE_TIMEOUT):
+                    return await self._set_aes67_stream(receiver_id, discovery_id)
+            except TimeoutError as err:
+                raise CrestronNVXError("Timed out confirming AES67 reception") from err
+
+    async def _set_aes67_stream(self, receiver_id: str, discovery_id: str | None) -> bool:
+        receivers = await self.get_aes67_receivers()
+        if (
+            not self.is_receiver
+            or not valid_key(receiver_id)
+            or single_receiver(receivers) != receiver_id
+        ):
+            raise CrestronNVXError("The single AES67 receiver is no longer available")
+        await self._require_independent_audio()
+        endpoint = None
+        if discovery_id is None:
+            change = {"StopRequested": True, "IsDisabled": True}
+        else:
+            if not valid_key(discovery_id):
+                raise CrestronNVXError("Invalid AES67 discovery identifier")
+            streams = await self.get_aes67_streams()
+            stream = streams.get(discovery_id)
+            if (
+                not isinstance(stream, dict)
+                or not compatible_stream(stream)
+                or receivers[receiver_id].get("IsEncryptionEnabled") is not False
+            ):
+                raise CrestronNVXError("AES67 selection requires an unencrypted stereo 48 kHz feed")
+            endpoint = stream_endpoint(stream)
+            change = {
+                "SessionNameRequested": stream["SessionNameStatus"],
+                "NetworkAddressRequested": endpoint[0],
+                "PortRequested": endpoint[1],
+                "IsDisabled": False,
+                "StartRequested": True,
+            }
+        body = {"Device": {"NaxAudio": {"NaxRx": {"NaxRxStreams": {receiver_id: change}}}}}
+        if not self._post_ok(
+            await self._request(
+                f"NaxAudio/NaxRx/NaxRxStreams/{receiver_id}", method="POST", json_body=body
+            )
+        ):
+            return False
+        for _ in range(20):
+            received = (await self.get_aes67_receivers()).get(receiver_id) or {}
+            if endpoint is None:
+                if (
+                    received.get("StreamStatus") == "Stream Stopped"
+                    and received.get("IsDisabled") is True
+                ):
+                    return True
+            elif stream_started(received) and stream_endpoint(received) == endpoint:
+                return True
+            await asyncio.sleep(0.25)
+        raise CrestronNVXError("The decoder did not confirm the selected AES67 receive state")
+
+    async def set_audio_output_mode(self, value: str) -> bool:
+        """Choose output audio without changing video or configuring any transmitter."""
+        async with self._audio_route_lock:
+            try:
+                async with asyncio.timeout(AUDIO_ROUTE_TIMEOUT):
+                    if not self.is_receiver or value not in AUDIO_OUTPUT_MODES.values():
+                        raise CrestronNVXError("Invalid audio output mode")
+                    specific = await self.get_device_specific()
+                    if (specific or {}).get("AudioSource") not in AUDIO_OUTPUT_MODES.values():
+                        raise CrestronNVXError("Audio output mode is not supported by this device")
+                    if value == "SecondaryStreamAudio":
+                        await self._require_independent_audio()
+                    body = {"Device": {"DeviceSpecific": {"AudioSource": value}}}
+                    if not self._post_ok(
+                        await self._request("DeviceSpecific", method="POST", json_body=body)
+                    ):
+                        return False
+                    for _ in range(20):
+                        status = await self.get_device_specific()
+                        if (status or {}).get("AudioSource") == value:
+                            return True
+                        await asyncio.sleep(0.25)
+                    raise CrestronNVXError("The decoder did not confirm the audio output mode")
+            except TimeoutError as err:
+                raise CrestronNVXError("Timed out confirming audio output mode") from err
+
     async def get_device_specific(self) -> Optional[dict]:
         """DeviceSpecific object - VideoSource/ActiveVideoSource used for HDMI input switching."""
         data = await self._request("DeviceSpecific")
         try:
-            return data["Device"]["DeviceSpecific"]
+            specific = data["Device"]["DeviceSpecific"]
+            return specific if isinstance(specific, dict) else None
         except (KeyError, TypeError):
             return None
 

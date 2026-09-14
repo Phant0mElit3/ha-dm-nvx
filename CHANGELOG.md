@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.3.0b1 (Prerelease)
+
+- Add direct AES67 Stream selection on NVX decoders reporting one receive slot,
+  including discovered compatible NAX media-player and physical-input feeds.
+- Add Audio Output Mode for primary, automatic, or DM NAX (AES67) output audio.
+- Require secondary Audio Follows Video to be explicitly disabled for independent
+  receive changes. Preserve video routing, USB, NAX transmission, encryption,
+  automatic initiation settings, and existing entity identifiers.
+- Verify receive status and multicast endpoint after writes; never report a
+  requested session alone as a successful switch. Serialize audio commands and
+  refresh on failures. Discover optional controls on later polls as needed.
+- Document the separate selectors, advertised names, setup, restoration,
+  automation, and the fact that UID-route Off does not stop direct AES67 audio.
+- Inspected the D30's live receive/discovery schema on firmware 7.1.5259.00090.
+  New routing writes are regression-tested with mocked I/O, not yet confirmed
+  audibly on hardware. Installation does not change playback. Stable 2.2.1
+  remains the non-beta release.
+
 ## 2.2.1
 
 - Reconcile video source changes with primary stream reception. When AvRouting

@@ -6,11 +6,18 @@ from collections import Counter
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .aes67 import (
+    AUDIO_OUTPUT_MODES,
+    single_receiver,
+    stream_endpoint,
+    stream_options,
+    stream_started,
+)
 from .const import DOMAIN
 from .entity import async_run_command, crestron_device_info
 
@@ -64,9 +71,39 @@ async def async_setup_entry(
 
     async_add_entities(entities)
 
+    added = set()
+
+    @callback
+    def add_audio_controls() -> None:
+        """Allow optional capabilities to appear on a later successful poll."""
+        new_entities = []
+        for coordinator in coordinators.values():
+            device = coordinator.device
+            if not device.is_receiver:
+                continue
+            status = coordinator.data or {}
+            receiver = single_receiver(status.get("aes67_receivers") or {})
+            if receiver:
+                key = (device.entity_id_prefix, "aes67")
+                if key not in added:
+                    added.add(key)
+                    new_entities.append(CrestronNVXAes67Select(coordinator, device))
+            mode = (status.get("device_specific") or {}).get("AudioSource")
+            if receiver and mode in AUDIO_OUTPUT_MODES.values():
+                key = (device.entity_id_prefix, "audio_output")
+                if key not in added:
+                    added.add(key)
+                    new_entities.append(CrestronNVXAudioOutputSelect(coordinator, device))
+        if new_entities:
+            async_add_entities(new_entities)
+
+    add_audio_controls()
+    for coordinator in coordinators.values():
+        entry.async_on_unload(coordinator.async_add_listener(add_audio_controls))
+
 
 class CrestronNVXStreamSelect(CoordinatorEntity, SelectEntity):
-    """Route primary video with receive readback; Off clears video/audio/USB."""
+    """Route primary video with receive readback; Off clears NVX UID routes."""
 
     def __init__(self, coordinator, device):
         """Initialize the select entity."""
@@ -161,6 +198,131 @@ class CrestronNVXAudioSourceSelect(CrestronNVXStreamSelect):
         if option not in sources:
             raise ServiceValidationError("The selected NVX source is no longer available")
         await async_run_command(self.coordinator, self.device.set_audio_source(sources[option]))
+
+
+class CrestronNVXAes67Select(CoordinatorEntity, SelectEntity):
+    """Direct AES67 reception, independent from the NVX video/UID routes."""
+
+    def __init__(self, coordinator, device):
+        super().__init__(coordinator)
+        self.device = device
+        self._attr_name = f"{device.name} AES67 Stream"
+        self._attr_unique_id = f"{device.entity_id_prefix}_aes67_stream"
+        self._attr_icon = "mdi:audio-input-rca"
+        self._attr_device_info = crestron_device_info(device)
+
+    @property
+    def _receiver_id(self) -> str | None:
+        return single_receiver((self.coordinator.data or {}).get("aes67_receivers") or {})
+
+    @property
+    def _receiver(self) -> dict:
+        return ((self.coordinator.data or {}).get("aes67_receivers") or {}).get(
+            self._receiver_id, {}
+        )
+
+    def _source_options(self) -> dict[str, str | None]:
+        return stream_options((self.coordinator.data or {}).get("aes67_streams") or {})
+
+    @property
+    def available(self) -> bool:
+        control = (self.coordinator.data or {}).get("route_control") or {}
+        return (
+            super().available
+            and self._receiver_id is not None
+            and control.get("IsSecondaryAudioFollowsVideoEnabled") is False
+        )
+
+    @property
+    def options(self) -> list[str]:
+        return list(self._source_options())
+
+    @property
+    def current_option(self) -> str | None:
+        receiver = self._receiver
+        if receiver.get("StreamStatus") == "Stream Stopped":
+            return OFF_OPTION
+        if not stream_started(receiver) or stream_endpoint(receiver) is None:
+            return None
+        streams = (self.coordinator.data or {}).get("aes67_streams") or {}
+        matches = [
+            label
+            for label, key in self._source_options().items()
+            if key is not None and stream_endpoint(streams[key]) == stream_endpoint(receiver)
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {
+            "receiver_id": self._receiver_id,
+            "stream_status": self._receiver.get("StreamStatus"),
+            "stream_error": self._receiver.get("ErrCode"),
+        }
+
+    async def async_select_option(self, option: str) -> None:
+        if not self.available:
+            raise ServiceValidationError("Disable Audio Follows Video before routing AES67 audio")
+        sources = self._source_options()
+        if option not in sources:
+            raise ServiceValidationError("The selected AES67 stream is no longer available")
+        try:
+            await async_run_command(
+                self.coordinator, self.device.set_aes67_stream(self._receiver_id, sources[option])
+            )
+        except HomeAssistantError:
+            await self.coordinator.async_request_refresh()
+            raise
+
+
+class CrestronNVXAudioOutputSelect(CoordinatorEntity, SelectEntity):
+    """Select which audio reaches the decoder output, independently of video."""
+
+    def __init__(self, coordinator, device):
+        super().__init__(coordinator)
+        self.device = device
+        self._attr_name = f"{device.name} Audio Output Mode"
+        self._attr_unique_id = f"{device.entity_id_prefix}_audio_output_mode"
+        self._attr_icon = "mdi:volume-high"
+        self._attr_options = list(AUDIO_OUTPUT_MODES)
+        self._attr_device_info = crestron_device_info(device)
+
+    @property
+    def available(self) -> bool:
+        status = self.coordinator.data or {}
+        return (
+            super().available
+            and single_receiver(status.get("aes67_receivers") or {}) is not None
+            and self.current_option is not None
+        )
+
+    @property
+    def current_option(self) -> str | None:
+        specific = (self.coordinator.data or {}).get("device_specific") or {}
+        return next(
+            (
+                label
+                for label, value in AUDIO_OUTPUT_MODES.items()
+                if value == specific.get("AudioSource")
+            ),
+            None,
+        )
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        specific = (self.coordinator.data or {}).get("device_specific") or {}
+        return {"active_audio_source": specific.get("ActiveAudioSource")}
+
+    async def async_select_option(self, option: str) -> None:
+        if not self.available or option not in AUDIO_OUTPUT_MODES:
+            raise ServiceValidationError("The selected audio output mode is not available")
+        try:
+            await async_run_command(
+                self.coordinator, self.device.set_audio_output_mode(AUDIO_OUTPUT_MODES[option])
+            )
+        except HomeAssistantError:
+            await self.coordinator.async_request_refresh()
+            raise
 
 
 class CrestronNVXLocalSourceSelect(CoordinatorEntity, SelectEntity):

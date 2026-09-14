@@ -149,7 +149,7 @@ class CrestronNVXDataUpdateCoordinator(DataUpdateCoordinator):
             }
             if data["video"] is None or data["ethernet"] is None:
                 raise UpdateFailed("Device did not return video and Ethernet status")
-            if self.device.hdmi_inputs > 0:
+            if self.device.hdmi_inputs > 0 or self.device.is_receiver:
                 data["device_specific"] = await self.device.get_device_specific()
             if self.device.test_patterns:
                 data["test_pattern"] = await self.device.get_test_pattern()
@@ -160,6 +160,9 @@ class CrestronNVXDataUpdateCoordinator(DataUpdateCoordinator):
                 data["route"] = await self.device.get_current_route()
                 data["primary_stream"] = await self.device.get_primary_stream()
                 data["route_control"] = await self.device.get_route_control()
+                data["aes67_receivers"] = await self.device.get_aes67_receivers()
+                if data["aes67_receivers"]:
+                    data["aes67_streams"] = await self.device.get_aes67_streams()
             return data
         except CrestronNVXAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err

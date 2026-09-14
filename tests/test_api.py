@@ -341,9 +341,12 @@ async def test_delayed_manual_stream_starts_only_after_new_location_settles(rout
 async def test_audio_follow_syncs_even_when_video_is_off(device):
     device._request = AsyncMock(return_value={"Actions": [{"Results": [{"StatusId": 0}]}]})
     device.get_current_route = AsyncMock(return_value={"VideoSource": ""})
-    device.set_audio_source = AsyncMock(return_value=True)
     assert await device.set_audio_follows_video(True)
-    device.set_audio_source.assert_awaited_once_with("")
+    device._request.assert_any_await(
+        "AvRouting/Routes/0",
+        method="POST",
+        json_body={"Device": {"AvRouting": {"Routes": [{"AudioSource": ""}]}}},
+    )
 
 
 @pytest.mark.parametrize(

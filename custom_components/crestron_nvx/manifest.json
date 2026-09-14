@@ -8,5 +8,5 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/Phant0mElit3/ha-dm-nvx/issues",
   "requirements": [],
-  "version": "2.2.1"
+  "version": "2.3.0b1"
 }

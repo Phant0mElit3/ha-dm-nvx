@@ -46,6 +46,8 @@ does not mean it is listed in the default HACS catalog.
 | Ethernet connectivity and network status | Primary network adapter |
 | Video stream source and full route Off | Receivers |
 | Independent audio source and audio-only Off | Receivers with Audio Follows Video disabled |
+| Direct NAX/AES67 stream selection | Beta: compatible decoders reporting one AES67 receive slot |
+| Audio output mode | Beta: those decoders exposing `DeviceSpecific.AudioSource` |
 | Audio Follows Video switch | Receivers exposing the route-control property |
 | HDMI output enable/blank | Receivers exposing output-disable status |
 | Stream/local HDMI selection | Receivers with HDMI inputs |
@@ -61,14 +63,30 @@ A video source change writes `VideoSource`, then checks primary reception.
 If the receiver accepts the route without changing streams, the integration
 sets the discovered RTSP URL on its primary receive slot and checks that it
 starts. This fallback does not write AES67 audio/USB routes or follow settings.
-Selecting video **Off** clears video, audio and USB together. Audio **Off**
-clears only audio.
+Selecting video **Off** clears the NVX video, audio and USB UID routes together.
+Audio Source **Off** clears only the NVX audio UID route. A direct AES67 feed
+has its own **AES67 Stream > Off** control; neither UID-route Off is a global
+mute for that separate receiver.
 
 Duplicate stream names are disambiguated with their IDs. The video dropdown
 uses receive location/status when available; a pending, stopped, or unmapped
 nonempty stream is unknown rather than falsely showing the requested source.
 On firmware without receive readback, the configured route is used instead.
 An undiscovered configured route remains an `Unknown (<ID>)` option.
+
+## NAX Audio to NVX Decoders (Beta)
+
+Version **2.3.0b1** adds **AES67 Stream** and **Audio Output Mode**. Installing
+the update does not change playback, follow settings, or the NAX configuration.
+The stable release remains 2.2.1 until live routing tests are complete.
+
+For a D30, open its Home Assistant device page, turn **Audio Follows Video**
+off, select a feed from **AES67 Stream**, then set **Audio Output Mode** to
+**DM NAX (AES67) Audio**. Your video selection stays unchanged. The NAX's
+existing AES67 transmission must already be enabled and discoverable.
+
+See [NAX-to-NVX audio setup](AES67_AUDIO.md) for exact steps, what the NAX
+stream names mean, how to restore video audio, and an automation example.
 
 ## Configuration and Recovery
 
